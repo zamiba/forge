@@ -15,7 +15,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/portforge/forge/engine"
+	"github.com/zamiba/forge/engine"
 )
 
 const usage = `forge — run declarative install specs

@@ -1,4 +1,4 @@
-module github.com/portforge/forge
+module github.com/zamiba/forge
 
 go 1.25.0
 

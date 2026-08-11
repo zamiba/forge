@@ -7,7 +7,7 @@ Forge executes an **install spec** — a JSON file describing an ordered sequenc
 It ships as a Go library and a CLI over the same code. The library is what applications embed; the CLI is for authoring specs, testing them, and driving them from programs that aren't written in Go.
 
 ```bash
-go install github.com/portforge/forge/cmd/forge@latest
+go install github.com/zamiba/forge/cmd/forge@latest
 ```
 
 ---
@@ -156,7 +156,7 @@ What is *not* bounded: the URLs a spec fetches, and what a declared command does
 ## Library use
 
 ```go
-import "github.com/portforge/forge/engine"
+import "github.com/zamiba/forge/engine"
 
 specs, _ := engine.LoadSpecFile(".install.json")
 spec := engine.Select(specs, engine.HostPlatform())
