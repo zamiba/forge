@@ -300,6 +300,14 @@ func cmdCheck(argv []string) error {
 	checkSteps(spec.Steps, "steps")
 	checkSteps(spec.UninstallSteps, "uninstallSteps")
 
+	// A $name nothing declares is left in the string verbatim at run time, so
+	// the build gets as far as the step carrying it and then fails with the
+	// invoked tool's complaint rather than anything naming the spec. Catching it
+	// here is the whole point of a check command.
+	for _, name := range engine.UndeclaredArgs(spec) {
+		problems = append(problems, fmt.Sprintf("$%s is used but not declared in args", name))
+	}
+
 	for _, p := range problems {
 		fmt.Fprintln(os.Stderr, p)
 	}

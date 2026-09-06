@@ -156,6 +156,8 @@ Each arg is `choice` (a fixed set of values) or `string` (free text), and gets a
 
 Any string field in a step supports `$name` and `${name}` substitution. Use the braces when the name is followed by more characters: `${region}_pc`. A name with no matching arg is left as written rather than blanked, so a typo shows up as a visibly wrong path instead of a truncated one.
 
+That is the right behaviour once a build is running and a poor one before it starts: nothing fails until the step carrying the reference executes, and what surfaces then is the invoked tool's complaint about a nonsensical argument rather than anything naming the spec. **`forge check` reports every `$name` that no arg declares**, which is where a mistake like this should be caught. It is a check rather than a run-time error because a literal dollar sign is not always a mistake — a step may pass one to a tool with its own idea of what it means.
+
 ### Conditional steps
 
 Any step may carry an `if`, evaluated after interpolation. Skipped steps are
@@ -237,6 +239,8 @@ Multiple `defineExecutable` steps are allowed; hosts typically treat the first a
 
 Forge runs specs you may not have written — a catalog of them can be synced from the internet. Three rules bound what one can do:
 
+**Variables must be declared.** `forge check` fails on any `$name` a step interpolates that no `args` entry declares, `$platform` and `$version` excepted.
+
 **Commands must be declared.** `run` only executes a command named in `dependencies`. Arguments are passed to the process directly and never through a shell, so `cmd` cannot smuggle in a pipeline or a second command. `forge check` reports any `run` whose command is undeclared, before the spec ever executes.
 
 **Paths stay inside the run directory.** Every step path resolves under `--dir` and is rejected if it escapes, whether by an absolute path or by `..`. Archive entries are checked the same way, so a crafted archive can't write outside the destination either. Hosts that legitimately need the wider filesystem set `AllowPathEscape`.
@@ -257,6 +261,13 @@ order := engine.VersionOrder(file.Specs)
 version := file.DefaultVersion
 spec := engine.Select(file.Specs, engine.HostPlatform(), version)
 args, _ := spec.ResolveArgs(map[string]string{"region": "us"})
+
+// What `forge check` reports. A host syncing specs it did not write can run
+// this before building, and fail with the name of the offending variable
+// rather than six steps later with a compiler's error message.
+if missing := engine.UndeclaredArgs(spec); len(missing) > 0 {
+    return fmt.Errorf("spec uses undeclared args: %v", missing)
+}
 
 res, err := engine.Run(ctx, engine.Options{
     Steps:        spec.Steps,

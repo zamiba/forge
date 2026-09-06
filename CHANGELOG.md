@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.3-alpha — 2026-09-06
+
+### Added
+
+- `forge check` now fails on any `$name` a step interpolates that no `args`
+  entry declares, `$platform` and `$version` excepted. `Interpolate` leaves an
+  unknown name in the string rather than blanking it, which is right once a
+  build is running and unhelpful before it starts: nothing fails until the step
+  carrying the reference executes, and what surfaces then is the invoked tool's
+  complaint about a nonsensical argument rather than anything naming the spec.
+- `engine.UndeclaredArgs(spec)` exposes the same check to hosts, so a program
+  running specs it did not write can reject one before building. It reads each
+  step's original JSON, so fields belonging to a host-registered step type are
+  covered as well as the builtin ones.
+
 ## v0.0.2-alpha — 2026-09-06
 
 ### Breaking
