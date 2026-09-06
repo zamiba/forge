@@ -66,30 +66,70 @@ type specFlags struct {
 	spec     *string
 	dir      *string
 	platform *string
+	version  *string
+
+	// Filled in by load().
+	file     *engine.SpecFile
+	order    []string
+	resolved string
 }
 
 func newSpecFlags(name string) *specFlags {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	return &specFlags{
 		fs:       fs,
-		spec:     fs.String("spec", ".install.json", "path to the spec file"),
+		spec:     fs.String("spec", defaultSpecPath, "path to the spec file"),
 		dir:      fs.String("dir", ".", "root directory the steps run in"),
 		platform: fs.String("platform", engine.HostPlatform(), "platform to match against targetPlatforms"),
+		version:  fs.String("version", "", "version to build (default: the file's defaultVersion, else the newest declared)"),
 	}
 }
 
-// load parses the spec file and selects the spec matching the platform.
+// defaultSpecPath is the spec filename to look for when -spec is not given.
+// The superseded name is still accepted so catalogs that have not been converted
+// keep working.
+const (
+	defaultSpecPath = ".forge.json"
+	legacySpecPath  = ".install.json"
+)
+
+// load parses the spec file and selects the build matching the platform and
+// version. It also records the file's version order, which ordered `if`
+// conditions resolve against, and the version actually being built.
 func (f *specFlags) load() (*engine.Spec, error) {
-	specs, err := engine.LoadSpecFile(*f.spec)
+	path := *f.spec
+	if path == defaultSpecPath {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if _, err := os.Stat(legacySpecPath); err == nil {
+				path = legacySpecPath
+			}
+		}
+	}
+
+	file, err := engine.LoadSpecFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if len(specs) == 0 {
-		return nil, fmt.Errorf("no specs found in %s", *f.spec)
+	if file == nil || len(file.Specs) == 0 {
+		return nil, fmt.Errorf("no builds found in %s", path)
 	}
-	spec := engine.Select(specs, *f.platform)
+	f.file = file
+	f.order = engine.VersionOrder(file.Specs)
+
+	// A build can cover several versions, so an unspecified version is genuinely
+	// ambiguous. Resolve it up front rather than letting Select pick whichever
+	// build happens to come first.
+	f.resolved = *f.version
+	if f.resolved == "" {
+		f.resolved = file.DefaultVersion
+	}
+	if f.resolved == "" && len(f.order) > 0 {
+		f.resolved = f.order[len(f.order)-1] // newest: the order is oldest first
+	}
+
+	spec := engine.Select(file.Specs, *f.platform, f.resolved)
 	if spec == nil {
-		return nil, fmt.Errorf("no spec in %s targets platform %q", *f.spec, *f.platform)
+		return nil, fmt.Errorf("no build in %s targets platform %q at version %q", path, *f.platform, f.resolved)
 	}
 	return spec, nil
 }
@@ -185,6 +225,9 @@ func cmdRun(argv []string) error {
 		Steps:               steps,
 		Dependencies:        spec.Dependencies,
 		Args:                args,
+		Platform:            *f.platform,
+		Version:             f.resolved,
+		VersionOrder:        f.order,
 		RootDir:             root,
 		Providers:           providers,
 		Events:              handler,

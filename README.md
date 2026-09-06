@@ -35,9 +35,10 @@ Common flags:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--spec` | `.install.json` | Path to the spec file. |
+| `--spec` | `.forge.json` | Path to the spec file. Falls back to `.install.json` when the default is used and no `.forge.json` exists. |
 | `--dir` | `.` | Root directory the steps run in. |
-| `--platform` | host OS | Platform to match against `targetPlatforms`. |
+| `--platform` | host OS | Platform to build for, matched against `targetPlatforms`. Injected as `$platform`. |
+| `--version` | see below | Version to build. Defaults to the file's `defaultVersion`, else the newest declared. Injected as `$version`. |
 | `--arg NAME=VALUE` | — | Supply an install argument. Repeatable. |
 | `--provider NAME=DIR` | — | Back a `copy` step's `from` with a directory. Repeatable. |
 | `--events` | `pretty` | `pretty`, `ndjson`, or `none`. |
@@ -46,9 +47,9 @@ Common flags:
 | `--require-executable` | off | Fail if no `defineExecutable` step ran. |
 
 ```bash
-forge check --spec .install.json
-forge run   --spec .install.json --dir ~/games/mygame --arg region=us
-forge run   --spec .install.json --dir ./out --events ndjson | jq -c 'select(.kind=="step:start")'
+forge check --spec .forge.json
+forge run   --spec .forge.json --dir ~/games/mygame --arg region=us
+forge run   --spec .forge.json --dir ./out --events ndjson | jq -c 'select(.kind=="step:start")'
 ```
 
 `pretty` progress goes to stderr, so stdout carries only the run's result — the JSON array of declared executables — and stays pipeable.
@@ -57,11 +58,37 @@ forge run   --spec .install.json --dir ./out --events ndjson | jq -c 'select(.ki
 
 ## Spec format
 
-A spec file is a JSON **array** of specs. The first whose `targetPlatforms` matches the host is the one that runs.
+A spec file declares **builds**. Each build states the versions and platforms it
+covers and the steps that produce them; `Select` returns the first build matching
+the requested platform and version.
+
+The file takes either of two forms. The short one is a bare JSON array of builds.
+The other is an object whose top level carries settings shared across builds:
+
+```json
+{
+  "defaultVersion": "1.0.0",
+  "dependencies": ["make", "gcc", "unzip"],
+  "builds": [
+    { "versions": ["1.0.0"], "targetPlatforms": ["Linux"], "steps": [] },
+    { "versions": ["2.0.0"], "dependencies": ["cmake"], "steps": [] }
+  ]
+}
+```
+
+A header value is a **default**: a build that declares the same field replaces it
+outright rather than merging with it, and `"dependencies": []` on a build means it
+needs none rather than that it inherits. Only the declarative fields —
+`dependencies`, `args`, `buildPaths`, `uninstallSteps` — can be defaulted this way.
+A build's `steps` are always written out in full, because merging two sequences has
+no obvious meaning and every scheme for it makes specs harder to read than the
+duplication does.
+
+A full build:
 
 ```json
 [{
-  "version": "1.0.0",
+  "versions": ["1.0.0"],
   "targetPlatforms": ["Linux"],
   "dependencies": ["make", "gcc", "unzip"],
   "args": {
@@ -93,13 +120,35 @@ A spec file is a JSON **array** of specs. The first whose `targetPlatforms` matc
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `version` | string | Spec version, recorded by hosts that track what they installed. |
+| `versions` | string[] | The versions this build produces, oldest first. |
+| `version` | string | Superseded scalar form of `versions`, still read. |
 | `targetPlatforms` | string[] | `"Linux"`, `"Mac"`, `"Windows"`. Omit to match every platform. |
 | `dependencies` | string[] | Commands that must be on `PATH`. Also the allowlist for `run` — see below. |
 | `args` | object | User-configurable parameters. |
 | `steps` | object[] | The ordered build sequence. |
 | `uninstallSteps` | object[] | Optional teardown sequence. |
 | `buildPaths` | string[] | Directories a host may delete to clean up after a failed run. |
+
+File-level only:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `defaultVersion` | string | The version a host should offer first. Must be one a build declares. |
+| `builds` | object[] | The builds themselves. Required in the object form. |
+
+### Versions
+
+Declaration order across the file is **chronological, oldest first**, and it is the
+version hierarchy that ordered conditions compare against. Preference is stated
+separately with `defaultVersion`, because the newest release is not always the one
+to recommend — a project whose newest build is a release candidate names the stable
+one there instead.
+
+A build covering several versions *and* several platforms asserts that every
+combination of the two is buildable. A version that ships for fewer platforms than
+its siblings therefore needs a build of its own; folding it in would advertise a
+build that does not exist. Nothing about the JSON looks wrong when this is
+violated, so it is worth checking deliberately.
 
 ### Args
 
@@ -109,11 +158,56 @@ Any string field in a step supports `$name` and `${name}` substitution. Use the 
 
 ### Conditional steps
 
-Any step may carry an `if`, evaluated after interpolation. It supports `==`, `!=`, and a bare value that is true when non-empty and not `false` or `0`. Skipped steps are excluded from progress totals.
+Any step may carry an `if`, evaluated after interpolation. Skipped steps are
+excluded from progress totals.
+
+`==` and `!=` compare as strings. A bare value is true when it is non-empty and not
+`false` or `0`.
 
 ```json
 { "step": "fetch", "if": "${textureMod} != none", "url": "…", "dest": ".build/textures.7z" }
 ```
+
+`>`, `>=`, `<` and `<=` compare **positions in the version hierarchy**, not parsed
+version numbers:
+
+```json
+{ "step": "run", "if": "$version >= 1.1.0", "cmd": "./migrate-config.sh" }
+```
+
+Nothing here tries to understand a version string, because real ones do not support
+it — a catalog holding `Barnard Alfa`, `1.1 RC4` and `Deckard Alfa (1.0.0)` has no
+parseable ordering, and a parser that guessed one would fail silently. Both operands
+must be versions the file declares; anything else is an error, so a mistyped
+threshold stops the run instead of quietly disabling a step.
+
+### Reserved arguments
+
+Two names are set by the engine and rejected if a caller supplies them:
+
+| Name | Value |
+| --- | --- |
+| `$platform` | The platform this run is building for. |
+| `$version` | The version being built. |
+
+`$platform` is the axis that varies *inside* a single build, which is what makes it
+worth branching on: one build covering Linux and Windows writes the handful of steps
+that differ with an `if`, and shares the rest.
+
+Reach for it in conditions rather than to assemble upstream names. Writing
+`"url": ".../${platform}.zip"` bets that a project names its artifacts to match, and
+that bet is lost the first time a release tags `1.1-rc4` for a version called
+`1.1 RC4`. Prefer literal URLs branched with `if`, and normalise the local filenames
+you control so the rest of the pipeline stays shared:
+
+```json
+{ "step": "fetch", "if": "$platform == Windows",
+  "url": "https://example.com/releases/1.0.2/Windows.zip", "dest": ".build/package.zip" },
+{ "step": "fetch", "if": "$platform != Windows",
+  "url": "https://example.com/releases/1.0.2/Linux.zip",   "dest": ".build/package.zip" }
+```
+
+That also means every URL a spec will ever fetch can be found by reading it.
 
 ---
 
@@ -158,14 +252,19 @@ What is *not* bounded: the URLs a spec fetches, and what a declared command does
 ```go
 import "github.com/zamiba/forge/engine"
 
-specs, _ := engine.LoadSpecFile(".install.json")
-spec := engine.Select(specs, engine.HostPlatform())
+file, _ := engine.LoadSpecFile(".forge.json")
+order := engine.VersionOrder(file.Specs)
+version := file.DefaultVersion
+spec := engine.Select(file.Specs, engine.HostPlatform(), version)
 args, _ := spec.ResolveArgs(map[string]string{"region": "us"})
 
 res, err := engine.Run(ctx, engine.Options{
     Steps:        spec.Steps,
     Dependencies: spec.Dependencies,
     Args:         args,
+    Platform:     engine.HostPlatform(),
+    Version:      version,
+    VersionOrder: order,
     RootDir:      installDir,
     Providers:    map[string]engine.Provider{"rom": myRomLibrary},
     Events:       func(e engine.Event) { ui.Report(e) },

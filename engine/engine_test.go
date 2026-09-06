@@ -41,7 +41,12 @@ func TestEvalCondition(t *testing.T) {
 		{"yes", true},
 	}
 	for _, c := range cases {
-		if got := EvalCondition(c.expr, args); got != c.want {
+		got, err := EvalCondition(c.expr, args, nil)
+		if err != nil {
+			t.Errorf("EvalCondition(%q): %v", c.expr, err)
+			continue
+		}
+		if got != c.want {
 			t.Errorf("EvalCondition(%q) = %v, want %v", c.expr, got, c.want)
 		}
 	}
@@ -52,14 +57,14 @@ func TestSelect(t *testing.T) {
 		{TargetPlatforms: []string{"Windows"}, Version: "win"},
 		{TargetPlatforms: []string{"Linux", "Mac"}, Version: "unix"},
 	}
-	if got := Select(specs, "Mac"); got == nil || got.Version != "unix" {
+	if got := Select(specs, "Mac", ""); got == nil || got.Version != "unix" {
 		t.Errorf("Select(Mac) = %v, want the unix spec", got)
 	}
-	if got := Select(specs, "Haiku"); got != nil {
+	if got := Select(specs, "Haiku", ""); got != nil {
 		t.Errorf("Select(Haiku) = %v, want nil", got)
 	}
 	unrestricted := []Spec{{Version: "any"}}
-	if got := Select(unrestricted, "Haiku"); got == nil || got.Version != "any" {
+	if got := Select(unrestricted, "Haiku", ""); got == nil || got.Version != "any" {
 		t.Errorf("a spec with no targetPlatforms should match everything")
 	}
 }
@@ -465,5 +470,52 @@ func TestAllowPathEscapeOptsOut(t *testing.T) {
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Errorf("directory not created outside root: %v", err)
+	}
+}
+
+func TestSelectByVersion(t *testing.T) {
+	specs := []Spec{
+		{Version: "2.0", TargetPlatforms: []string{"Linux"}},
+		{Version: "1.0", TargetPlatforms: []string{"Linux"}},
+		{Version: "1.0", TargetPlatforms: []string{"Windows"}},
+	}
+
+	// Version and platform both have to match; the first spec is not simply
+	// returned because it happens to target the right platform.
+	if got := Select(specs, "Linux", "1.0"); got == nil || got.TargetPlatforms[0] != "Linux" || got.Version != "1.0" {
+		t.Errorf("Select(Linux, 1.0) = %v, want the Linux 1.0 spec", got)
+	}
+	if got := Select(specs, "Windows", "1.0"); got == nil || got.TargetPlatforms[0] != "Windows" {
+		t.Errorf("Select(Windows, 1.0) = %v, want the Windows 1.0 spec", got)
+	}
+	// A version that exists but not for this platform must not fall back.
+	if got := Select(specs, "Windows", "2.0"); got != nil {
+		t.Errorf("Select(Windows, 2.0) = %v, want nil", got)
+	}
+	// An empty version keeps the old platform-only behaviour.
+	if got := Select(specs, "Linux", ""); got == nil || got.Version != "2.0" {
+		t.Errorf("Select(Linux, \"\") = %v, want the first Linux spec", got)
+	}
+}
+
+func TestVersions(t *testing.T) {
+	specs := []Spec{
+		{Version: "2.0", TargetPlatforms: []string{"Linux"}},
+		{Version: "1.0", TargetPlatforms: []string{"Linux"}},
+		{Version: "1.0", TargetPlatforms: []string{"Windows", "Mac"}},
+	}
+
+	got := Versions(specs)
+	if len(got) != 2 {
+		t.Fatalf("Versions() returned %d entries, want 2 distinct versions", len(got))
+	}
+	// Declaration order is preserved rather than sorted: versions like
+	// "Barnard Alfa" have no orderable form, so the file's order is the only one.
+	if got[0].Version != "2.0" || got[1].Version != "1.0" {
+		t.Errorf("Versions() = %v, want declaration order 2.0 then 1.0", got)
+	}
+	// Platforms of same-version specs are merged, not duplicated.
+	if len(got[1].Platforms) != 3 {
+		t.Errorf("1.0 platforms = %v, want Linux, Windows and Mac merged", got[1].Platforms)
 	}
 }

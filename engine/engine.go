@@ -26,8 +26,24 @@ type Options struct {
 	Dependencies []string
 
 	// Args are the resolved install argument values, substituted into step
-	// fields as $name / ${name}.
+	// fields as $name / ${name}. The names "platform" and "version" are
+	// reserved and rejected here, since Run injects them itself.
 	Args map[string]string
+
+	// Platform is the target platform this run builds for, injected as
+	// $platform. It is the axis that varies inside a single build — a spec
+	// covering Linux and Windows branches on it with `if` — which is why it is
+	// a variable rather than something the host bakes into the steps.
+	Platform string
+
+	// Version is the version being built, injected as $version.
+	Version string
+
+	// VersionOrder is every version the spec file declares, oldest first. It is
+	// the hierarchy that ordered conditions such as "$version >= 1.1.0" resolve
+	// against; see EvalCondition. Leave it empty when a spec uses no ordered
+	// conditions.
+	VersionOrder []string
 
 	// RootDir is the working directory the first step starts in, and the base
 	// that defineExecutable paths are recorded relative to. Required; created
@@ -227,9 +243,24 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	args := opts.Args
-	if args == nil {
-		args = map[string]string{}
+	// Reserved names are injected into a copy. Mutating opts.Args would leak
+	// them back to the host, and PortForge persists the arg map it passed in so
+	// a rebuild can reuse it — writing $platform into that map would make the
+	// next run fail the check below.
+	for _, reserved := range []string{"platform", "version"} {
+		if _, taken := opts.Args[reserved]; taken {
+			return nil, fmt.Errorf("engine: arg %q is reserved and set by the engine", reserved)
+		}
+	}
+	args := make(map[string]string, len(opts.Args)+2)
+	for k, v := range opts.Args {
+		args[k] = v
+	}
+	if opts.Platform != "" {
+		args["platform"] = opts.Platform
+	}
+	if opts.Version != "" {
+		args["version"] = opts.Version
 	}
 	client := opts.HTTPClient
 	if client == nil {
@@ -269,7 +300,15 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// ones their conditions skip.
 	total := 0
 	for _, s := range opts.Steps {
-		if s.If == "" || EvalCondition(s.If, args) {
+		if s.If == "" {
+			total++
+			continue
+		}
+		ok, err := EvalCondition(s.If, args, opts.VersionOrder)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			total++
 		}
 	}
@@ -283,11 +322,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	index := 0
 	for _, step := range opts.Steps {
-		if step.If != "" && !EvalCondition(step.If, args) {
-			label := StepLabel(step, args)
-			st.Logf("[skipped] %s", label)
-			st.Emit(Event{Kind: EventStepSkip, Step: step.Step, Label: label})
-			continue
+		if step.If != "" {
+			run, err := EvalCondition(step.If, args, opts.VersionOrder)
+			if err != nil {
+				return fail(StepLabel(step, args), step.Step, index, err)
+			}
+			if !run {
+				label := StepLabel(step, args)
+				st.Logf("[skipped] %s", label)
+				st.Emit(Event{Kind: EventStepSkip, Step: step.Step, Label: label})
+				continue
+			}
 		}
 
 		if err := ctx.Err(); err != nil {
