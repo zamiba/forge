@@ -208,7 +208,15 @@ func stepDeletePath(_ context.Context, st *State, step Step) error {
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(full)
+	keep, err := st.preservedUnder(full)
+	if err != nil {
+		return err
+	}
+	if len(keep) == 0 {
+		return os.RemoveAll(full)
+	}
+	st.Logf("  keeping: %s", strings.Join(keep, ", "))
+	return deletePreserving(full, keep)
 }
 
 func stepDefineExecutable(_ context.Context, st *State, step Step) error {

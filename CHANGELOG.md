@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+## v0.0.4-alpha — 2026-09-10
+
+- **`userDataPaths`** — the paths holding data the program's user owns, which a
+  `deletePath` must leave behind. A teardown sequence is usually one
+  `deletePath install`, which takes save games and configuration with it when
+  those live inside the installed tree. Listing them keeps them. Declared per
+  build, or once for the file as a default, like the other declarative fields.
+
+  It sits beside `uninstallSteps` rather than inside a step because the callers
+  that need it are not all steps: a host removing an item may have no
+  `uninstallSteps` to read, and protecting user data across a reinstall over an
+  existing tree runs no uninstall sequence at all.
+
+  Paths resolve against the run's root rather than the working directory, may
+  nest below directories the delete would otherwise remove wholesale, and are
+  reported by `forge check` if they interpolate an undeclared `$name`. A
+  preserved path that does not exist is not an error; one naming the path being
+  deleted is.
+
+- The delete is **crash-safe and resumable**. The target is set aside with one
+  rename into a `.tmp-` sibling, preserved paths are moved into a fresh
+  directory, and the remainder is deleted last — so nothing is destroyed until
+  everything being kept is already in place, every move is a rename on one
+  filesystem rather than a copy, and re-running after an interruption completes
+  the operation instead of restarting it.
+
+- `engine.SetAside` and `engine.PutBack` move declared paths out of a tree and
+  return them, for hosts that must run an operation *over* user data rather than
+  delete around it — a rebuild writing into a directory the player has saves in.
+  The pair survives interruption: data already set aside is skipped rather than
+  clobbered, so the next PutBack still returns it.
+- `engine.Options.PreservePaths` carries the list into a run.
+
 ## v0.0.3-alpha — 2026-09-06
 
 ### Added

@@ -42,6 +42,11 @@ func UndeclaredArgs(spec *Spec) []string {
 			collectRefs(step, used)
 		}
 	}
+	// User data paths are interpolated like any other path, so a typo in one is
+	// the same class of mistake and worth catching in the same place.
+	for _, p := range spec.UserDataPaths {
+		refsIn(p, used)
+	}
 
 	var out []string
 	for name := range used {

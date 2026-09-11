@@ -84,6 +84,15 @@ type Options struct {
 	// hosts whose specs legitimately address the wider filesystem, such as one
 	// managing subvolumes under a mount point.
 	AllowPathEscape bool
+
+	// PreservePaths are paths that a deletePath step must leave behind even
+	// when it removes a tree containing them. They resolve against RootDir and
+	// must stay inside it.
+	//
+	// Hosts pass a spec's userDataPaths here. The engine keeps the imperative
+	// name because it knows nothing about what the paths hold: a host with no
+	// notion of user data can protect anything it needs to survive a delete.
+	PreservePaths []string
 }
 
 // Result is what a successful run produced.
@@ -106,15 +115,16 @@ type State struct {
 	// Args are the resolved install args.
 	Args map[string]string
 
-	executables []Executable
-	providers   map[string]Provider
-	allowed     map[string]bool
-	allowEscape bool
-	events      Handler
-	log         io.Writer
-	logMu       sync.Mutex
-	client      *http.Client
-	msys2Root   string
+	executables   []Executable
+	providers     map[string]Provider
+	allowed       map[string]bool
+	allowEscape   bool
+	preservePaths []string
+	events        Handler
+	log           io.Writer
+	logMu         sync.Mutex
+	client        *http.Client
+	msys2Root     string
 }
 
 // Interp substitutes the run's args into s.
@@ -125,13 +135,21 @@ func (st *State) Interp(s string) string { return Interpolate(s, st.Args) }
 // RootDir: an untrusted spec should not be able to read or write outside the
 // directory it was given, whether by an absolute path or by "..".
 func (st *State) Resolve(path string) (string, error) {
+	return st.resolveAt(st.WorkDir, path)
+}
+
+// resolveAt is Resolve against an explicit base. Step paths are relative to the
+// working directory, but a declaration made once for the whole run — preserved
+// paths — belongs to RootDir instead, so that a `cd` earlier in the sequence
+// cannot change what it refers to.
+func (st *State) resolveAt(base, path string) (string, error) {
 	p := st.Interp(path)
 
 	var full string
 	if filepath.IsAbs(p) {
 		full = filepath.Clean(p)
 	} else {
-		full = filepath.Clean(filepath.Join(st.WorkDir, p))
+		full = filepath.Clean(filepath.Join(base, p))
 	}
 	if st.allowEscape {
 		return full, nil
@@ -279,16 +297,26 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	st := &State{
-		RootDir:     opts.RootDir,
-		WorkDir:     opts.RootDir,
-		Args:        args,
-		providers:   opts.Providers,
-		allowed:     allowed,
-		allowEscape: opts.AllowPathEscape,
-		events:      opts.Events,
-		log:         opts.Log,
-		client:      client,
-		msys2Root:   msys2Root,
+		RootDir:       opts.RootDir,
+		WorkDir:       opts.RootDir,
+		Args:          args,
+		providers:     opts.Providers,
+		allowed:       allowed,
+		allowEscape:   opts.AllowPathEscape,
+		preservePaths: opts.PreservePaths,
+		events:        opts.Events,
+		log:           opts.Log,
+		client:        client,
+		msys2Root:     msys2Root,
+	}
+
+	// A preserved path that resolves outside the run directory is a spec error,
+	// and one worth reporting before the first step rather than partway through
+	// the delete that was supposed to honour it.
+	for _, p := range opts.PreservePaths {
+		if _, err := st.resolveAt(st.RootDir, p); err != nil {
+			return nil, fmt.Errorf("engine: userDataPaths: %w", err)
+		}
 	}
 
 	handlers := builtinSteps()

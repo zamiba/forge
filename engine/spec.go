@@ -24,7 +24,12 @@ type Spec struct {
 	Args            map[string]ArgSpec `json:"args,omitempty"`
 	Steps           []Step             `json:"steps"`
 	BuildPaths      []string           `json:"buildPaths,omitempty"`
-	UninstallSteps  []Step             `json:"uninstallSteps,omitempty"`
+	// UserDataPaths are paths holding data the program's user owns — saves,
+	// configuration — living inside a tree that a delete would otherwise remove
+	// wholesale. They resolve against RootDir, not the working directory,
+	// because they describe the item rather than any one step's position in it.
+	UserDataPaths  []string `json:"userDataPaths,omitempty"`
+	UninstallSteps []Step   `json:"uninstallSteps,omitempty"`
 }
 
 // ArgSpec describes a single user-configurable install argument.
@@ -136,6 +141,7 @@ type specFileHeader struct {
 	Dependencies   *[]string           `json:"dependencies"`
 	Args           *map[string]ArgSpec `json:"args"`
 	BuildPaths     *[]string           `json:"buildPaths"`
+	UserDataPaths  *[]string           `json:"userDataPaths"`
 	UninstallSteps *[]Step             `json:"uninstallSteps"`
 	Builds         []Spec              `json:"builds"`
 }
@@ -176,6 +182,9 @@ func ParseSpecFile(data []byte) (*SpecFile, error) {
 		}
 		if b.BuildPaths == nil && h.BuildPaths != nil {
 			b.BuildPaths = *h.BuildPaths
+		}
+		if b.UserDataPaths == nil && h.UserDataPaths != nil {
+			b.UserDataPaths = *h.UserDataPaths
 		}
 		if b.UninstallSteps == nil && h.UninstallSteps != nil {
 			b.UninstallSteps = *h.UninstallSteps

@@ -79,7 +79,8 @@ The other is an object whose top level carries settings shared across builds:
 A header value is a **default**: a build that declares the same field replaces it
 outright rather than merging with it, and `"dependencies": []` on a build means it
 needs none rather than that it inherits. Only the declarative fields —
-`dependencies`, `args`, `buildPaths`, `uninstallSteps` — can be defaulted this way.
+`dependencies`, `args`, `buildPaths`, `userDataPaths`, `uninstallSteps` — can be
+defaulted this way.
 A build's `steps` are always written out in full, because merging two sequences has
 no obvious meaning and every scheme for it makes specs harder to read than the
 duplication does.
@@ -128,6 +129,7 @@ A full build:
 | `steps` | object[] | The ordered build sequence. |
 | `uninstallSteps` | object[] | Optional teardown sequence. |
 | `buildPaths` | string[] | Directories a host may delete to clean up after a failed run. |
+| `userDataPaths` | string[] | Paths a `deletePath` must leave behind — see below. |
 
 File-level only:
 
@@ -228,10 +230,68 @@ Paths are relative to the current working directory, which starts at the run's r
 | `make` | `args`, `env` | Run `make`. Predates `run` and kept for compatibility. |
 | `createDir` | `path` | `mkdir -p`. |
 | `touch` | `path` | Create an empty file, including parent directories. Leaves an existing file's contents alone. |
-| `deletePath` | `path` | `rm -rf`. Succeeds when the path is already absent. |
+| `deletePath` | `path` | `rm -rf`, minus anything listed in `userDataPaths`. Succeeds when the path is already absent. |
 | `defineExecutable` | `executable`, `title` | Record a launch target. Applies `chmod +x` on non-Windows. Moves no files. |
 
 Multiple `defineExecutable` steps are allowed; hosts typically treat the first as the default.
+
+### User data
+
+A teardown sequence is usually one `deletePath install`, which is fine until the
+program has written save games or a configuration file inside the tree it is about
+to remove. `userDataPaths` names the paths that hold data the user owns, and every
+delete leaves them alone:
+
+```json
+{
+  "userDataPaths": ["install/saves", "install/game.config"],
+  "builds": [{
+    "versions": ["1.0.0"],
+    "steps": [ ... ],
+    "uninstallSteps": [
+      { "step": "deletePath", "path": "install" }
+    ]
+  }]
+}
+```
+
+Like the other declarative fields it can be given per build instead, for a program
+that moved its save directory between versions:
+
+```json
+{
+  "versions": ["0.3.0"],
+  "userDataPaths": ["install/data/saves"],
+  "steps": [ ... ]
+}
+```
+
+It sits beside `uninstallSteps` rather than inside a step because more than one
+thing reads it. A host removing an item may have no `uninstallSteps` to look at,
+and protecting user data across a reinstall over an existing tree runs no uninstall
+sequence at all — PortForge uses the same declaration for both, and to tell the
+user what an uninstall will keep before running it.
+
+Points worth knowing:
+
+- Paths resolve against the **run's root directory**, not the working directory, so
+  an earlier `cd` cannot change what they refer to. They must stay inside the root
+  like any other path, and a bad one fails the run before the first step.
+- They are literal paths, not globs, and they may nest arbitrarily deep. A delete
+  that would remove a directory containing one recurses into it instead.
+- A path that does not exist is not an error. A program that has never run has
+  written no saves.
+- Naming the path being deleted *is* an error, since honouring it would mean
+  deleting nothing.
+- `$name` interpolation applies, and `forge check` reports an undeclared reference
+  in a preserved path just as it does in a step.
+
+The operation is built to survive being killed. The target is set aside with a
+single rename into a `.tmp-` sibling, preserved paths are moved back into a fresh
+directory, and only then is the remainder deleted — so nothing is destroyed until
+everything being kept is already in its final place, and re-running after an
+interruption finishes the job rather than starting over. A `.tmp-` directory beside
+a path you delete this way is reserved for that purpose.
 
 ---
 
