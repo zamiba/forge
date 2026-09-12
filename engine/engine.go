@@ -37,6 +37,16 @@ type Options struct {
 	PlatformVars map[string]string
 	VersionVars  map[string]string
 
+	// Teardown marks a run as removing an item rather than installing one.
+	//
+	// It changes what PreservePaths does. A teardown is protected by deletePath
+	// alone, which already spares the listed paths. An install is protected by
+	// moving them out of the tree for the duration, because a build writing its
+	// own copy of a file the user has edited is not a delete and deletePath
+	// never sees it. Doing both to a teardown would leave every uninstall with
+	// an install directory containing nothing but the saves.
+	Teardown bool
+
 	// Platform is the target platform this run builds for, injected as
 	// $platform. It is the axis that varies inside a single build — a spec
 	// covering Linux and Windows branches on it with `if` — which is why it is
@@ -255,7 +265,7 @@ func (st *State) resolveProvider(ctx context.Context, step Step) (string, error)
 }
 
 // Run executes a step sequence and returns the executables it declared.
-func Run(ctx context.Context, opts Options) (*Result, error) {
+func Run(ctx context.Context, opts Options) (res *Result, rerr error) {
 	if opts.RootDir == "" {
 		return nil, fmt.Errorf("engine: RootDir is required")
 	}
@@ -325,13 +335,44 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		msys2Root:     msys2Root,
 	}
 
-	// A preserved path that resolves outside the run directory is a spec error,
-	// and one worth reporting before the first step rather than partway through
-	// the delete that was supposed to honour it.
+	// Resolve the preserved paths once, to positions relative to the run
+	// directory. One that lands outside it is a spec error worth reporting
+	// before the first step rather than partway through the operation that was
+	// supposed to honour it.
+	var preserveRel []string
 	for _, p := range opts.PreservePaths {
-		if _, err := st.resolveAt(st.RootDir, p); err != nil {
+		full, err := st.resolveAt(st.RootDir, p)
+		if err != nil {
 			return nil, fmt.Errorf("engine: userDataPaths: %w", err)
 		}
+		rel, err := filepath.Rel(st.RootDir, full)
+		if err != nil || rel == "." {
+			return nil, fmt.Errorf("engine: userDataPaths: %q is the run directory itself", p)
+		}
+		preserveRel = append(preserveRel, rel)
+	}
+
+	// An install runs over whatever the last one left behind, so user data is
+	// moved out of the tree for the duration and moved back afterwards — on
+	// failure too, since a build that dies halfway must not take a player's
+	// saves with it. The host declares the paths; it does not have to know this
+	// happens, which is the point: forgetting to arrange it is how the data
+	// gets lost.
+	if len(preserveRel) > 0 && !opts.Teardown {
+		scratch := filepath.Join(st.RootDir, userDataScratch)
+		if err := SetAside(st.RootDir, scratch, preserveRel); err != nil {
+			return nil, fmt.Errorf("engine: setting user data aside: %w", err)
+		}
+		defer func() {
+			if err := PutBack(scratch, st.RootDir, preserveRel); err != nil && rerr == nil {
+				rerr = fmt.Errorf("engine: restoring user data: %w", err)
+			}
+		}()
+		// With the data out of the tree there is nothing left in it for
+		// deletePath to spare, and leaving the list in place would make an
+		// installer that clears its own config directory fail on a
+		// contradiction that no longer exists.
+		st.preservePaths = nil
 	}
 
 	handlers := builtinSteps()

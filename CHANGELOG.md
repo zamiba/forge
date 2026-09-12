@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.0.6-alpha - 2026-09-12
+
+### Added
+
+- **The engine protects user data across an install itself.** `deletePath`
+  sparing the declared paths only covers a removal; an install runs over the
+  previous one, and a build shipping its own copy of a file the user has edited
+  is not a delete. `Run` now moves the paths out of the tree before the first
+  step and back after the last, on failure as well as success — so a host gets
+  the protection by declaring the paths rather than by arranging it. Previously
+  only PortForge did this, and any other host silently did not.
+
+- **`Options.Teardown`** marks a run as removing an item rather than installing
+  one, which is the one thing the engine cannot infer from a step list. A
+  teardown is spared the set-aside, since doing both would leave every uninstall
+  with an install directory holding nothing but the saves.
+
+- **`Spec.BuildOptions` and `Spec.TeardownOptions`** fill the spec-derived half
+  of `Options` — steps, dependencies, args, the platform's and version's bound
+  variables, and the user data paths. Nine fields came from the spec and every
+  host retyped them, which is nine chances to omit one; the cost of omitting the
+  last was deleting a player's saves, as this CLI did until v0.0.5. A field added
+  later now reaches every host instead of only the ones that hear about it.
+
 ## v0.0.5-alpha - 2026-09-11
 
 ### Breaking

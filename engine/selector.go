@@ -134,3 +134,45 @@ func varNames(table map[string]map[string]string) []string {
 	}
 	return out
 }
+
+// BuildOptions fills the spec-derived half of Options for an install: the
+// steps, the declared dependencies, the variables the chosen platform and
+// version bind, and the user data paths the run must protect.
+//
+// It exists because assembling those by hand is seven chances to forget one,
+// and the consequence of forgetting the last is deleting a user's save files —
+// which is exactly what forge's own CLI did until it was noticed. A host still
+// sets RootDir and whatever else it needs, and may override anything here; the
+// point is only that the spec-derived fields arrive complete, and that a field
+// added later reaches every host rather than the ones that hear about it.
+//
+// args are used as given. Call ResolveArgs first to apply the spec's defaults.
+func (s *Spec) BuildOptions(platform, version string, args map[string]string, order []string) Options {
+	return s.options(s.Steps, platform, version, args, order)
+}
+
+// TeardownOptions is BuildOptions for removing an item instead of installing
+// one: the uninstall sequence, Teardown set so user data is protected by
+// deletePath rather than moved aside, and the dependency check skipped, since
+// the tools that built an item may be long gone by the time it is removed.
+func (s *Spec) TeardownOptions(platform, version string, args map[string]string, order []string) Options {
+	opts := s.options(s.UninstallSteps, platform, version, args, order)
+	opts.Teardown = true
+	opts.SkipDependencyCheck = true
+	return opts
+}
+
+func (s *Spec) options(steps []Step, platform, version string, args map[string]string, order []string) Options {
+	platformVars, versionVars := s.VarsFor(platform, version)
+	return Options{
+		Steps:         steps,
+		Dependencies:  s.Dependencies,
+		Args:          args,
+		PlatformVars:  platformVars,
+		VersionVars:   versionVars,
+		PreservePaths: s.UserDataPaths,
+		Platform:      platform,
+		Version:       version,
+		VersionOrder:  order,
+	}
+}

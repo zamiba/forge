@@ -6,6 +6,8 @@ Forge executes an **install spec** — a JSON file describing an ordered sequenc
 
 It ships as a Go library and a CLI over the same code. The library is what applications embed; the CLI is for authoring specs, testing them, and driving them from programs that aren't written in Go.
 
+Throughout, the **host** is whatever program calls the engine — PortForge, the `forge` CLI itself, or anything else embedding the library. The distinction matters because forge deliberately knows nothing about games, ROMs, or where content lives: the host supplies all of that through the seams described under [Library use](#library-use).
+
 ```bash
 go install github.com/zamiba/forge/cmd/forge@latest
 ```
@@ -383,7 +385,21 @@ Points worth knowing:
 - `${name}` interpolation applies, and `forge check` reports an undeclared reference
   in a user data path just as it does in a step.
 
-The operation is built to survive being killed. The target is set aside with a
+An install is protected differently from a removal, and the engine handles both.
+
+A **removal** is covered by `deletePath` sparing the listed paths, above. An
+**install** runs over whatever the last one left behind, and a build shipping its own
+copy of a file the user has edited is not a delete — `deletePath` never sees it. So for
+a run that is not a teardown, the engine moves the declared paths out of the tree
+before the first step and moves them back after the last one, on failure as well as
+success. The user's copy wins over a shipped default, because that is what preserving
+it means.
+
+Hosts say which kind of run it is with `Options.Teardown`, or by taking
+`Spec.TeardownOptions` instead of `Spec.BuildOptions`. Nothing else is required: a host
+that declares the paths gets both protections without knowing either exists.
+
+The delete operation is built to survive being killed. The target is set aside with a
 single rename into a `.tmp-` sibling, the declared paths are moved back into a fresh
 directory, and only then is the remainder deleted — so nothing is destroyed until
 everything being kept is already in its final place, and re-running after an
@@ -430,34 +446,35 @@ if stale := engine.UnbracedRefs(spec); len(stale) > 0 {
     return fmt.Errorf("spec writes these without braces, so they are inert: %v", stale)
 }
 
-res, err := engine.Run(ctx, engine.Options{
-    Steps:        spec.Steps,
-    Dependencies: spec.Dependencies,
-    Args:         args,
-    PlatformVars: platformVars,
-    VersionVars:  versionVars,
-    Platform:     platform,
-    Version:      version,
-    VersionOrder: order,
-    // Without this a teardown deletes the user's saves along with the program.
-    PreservePaths: spec.UserDataPaths,
-    RootDir:       installDir,
-    Providers:     map[string]engine.Provider{"rom": myRomLibrary},
-    Events:        func(e engine.Event) { ui.Report(e) },
-    Log:           logFile,
-})
+// The spec-derived half of Options in one call: steps, dependencies, args,
+// the platform's and version's bound variables, and the user data paths the
+// run must protect. Assembling those by hand is one chance to forget per
+// field, and forgetting the last one deletes a player's saves.
+opts := spec.BuildOptions(platform, version, args, order)
+opts.RootDir = installDir
+opts.Providers = map[string]engine.Provider{"rom": myRomLibrary}
+opts.Events = func(e engine.Event) { ui.Report(e) }
+opts.Log = logFile
+
+res, err := engine.Run(ctx, opts)
 ```
 
 `Run` blocks until the sequence finishes and honours context cancellation at step boundaries, killing any running subprocess.
 
-`Args` are supplied unnamespaced — `{"region": "us"}`, reached as `${args.region}` —
-and the engine builds the namespaced table itself. The names `platform` and `version`
-are rejected there: nothing can collide with them now that references are namespaced,
-but the reservation is kept so that stays true.
+Removing an item takes `spec.TeardownOptions(...)` instead: the uninstall sequence,
+the dependency check skipped since the build tools may be gone, and `Teardown` set so
+user data is spared by `deletePath` rather than moved aside. Both constructors leave
+every host-owned field alone, so anything above can be overridden after the call.
 
-Two helpers exist for tearing an item down without going through a spec.
-`engine.SetAside` and `engine.PutBack` move declared paths out of a tree and return
-them, which is what protects user data when a build runs over an existing install.
+`Args` are supplied unnamespaced — `{"region": "us"}`, reached as `${args.region}` —
+and the engine builds the namespaced table itself. Call `spec.ResolveArgs` first if you
+want the spec's defaults applied. The names `platform` and `version` are rejected
+there: nothing can collide with them now that references are namespaced, but the
+reservation is kept so that stays true.
+
+`engine.SetAside` and `engine.PutBack` are exported for hosts doing their own file
+juggling, but `Run` calls them itself for any non-teardown run, so a host does not need
+to.
 
 ### Providers
 

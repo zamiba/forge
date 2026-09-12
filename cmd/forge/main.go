@@ -221,25 +221,27 @@ func cmdRun(argv []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	platformVars, versionVars := spec.VarsFor(*f.platform, f.resolved)
+	// The spec-derived half of Options comes from the spec rather than being
+	// retyped here, so a field added to it reaches this caller too. Uninstalling
+	// takes the other constructor: it selects the teardown sequence, skips the
+	// dependency check, and stops the engine from setting user data aside, which
+	// is an install's protection rather than a removal's.
+	var opts engine.Options
+	if *uninstall {
+		opts = spec.TeardownOptions(*f.platform, f.resolved, args, f.order)
+	} else {
+		opts = spec.BuildOptions(*f.platform, f.resolved, args, f.order)
+	}
+	opts.RootDir = root
+	opts.Providers = providers
+	opts.Events = handler
+	opts.Log = logw
+	opts.RequireExecutable = *requireExe
+	if *skipDeps {
+		opts.SkipDependencyCheck = true
+	}
 
-	res, err := engine.Run(ctx, engine.Options{
-		Steps:               steps,
-		Dependencies:        spec.Dependencies,
-		Args:                args,
-		PlatformVars:        platformVars,
-		VersionVars:         versionVars,
-		Platform:            *f.platform,
-		Version:             f.resolved,
-		VersionOrder:        f.order,
-		PreservePaths:       spec.UserDataPaths,
-		RootDir:             root,
-		Providers:           providers,
-		Events:              handler,
-		Log:                 logw,
-		SkipDependencyCheck: *skipDeps || *uninstall,
-		RequireExecutable:   *requireExe,
-	})
+	res, err := engine.Run(ctx, opts)
 	if err != nil {
 		return err
 	}

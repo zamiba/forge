@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,7 @@ func TestDeletePathKeepsUserDataPaths(t *testing.T) {
 
 	if _, err := run(t, Options{
 		RootDir:       root,
+		Teardown:      true,
 		PreservePaths: []string{"install/saves", "install/game.config"},
 		Steps:         []Step{{Step: "deletePath", Path: "install"}},
 	}); err != nil {
@@ -90,6 +92,7 @@ func TestDeletePathKeepsPathsNestedBelowDeletedDirectories(t *testing.T) {
 
 	if _, err := run(t, Options{
 		RootDir:       root,
+		Teardown:      true,
 		PreservePaths: []string{"install/data/saves"},
 		Steps:         []Step{{Step: "deletePath", Path: "install"}},
 	}); err != nil {
@@ -181,6 +184,7 @@ func TestPreservedPathThatWasNeverCreatedIsNotAnError(t *testing.T) {
 
 	if _, err := run(t, Options{
 		RootDir:       root,
+		Teardown:      true,
 		PreservePaths: []string{"install/saves"},
 		Steps:         []Step{{Step: "deletePath", Path: "install"}},
 	}); err != nil {
@@ -200,6 +204,7 @@ func TestUserDataPathsOnlyAffectDeletesThatContainThem(t *testing.T) {
 
 	if _, err := run(t, Options{
 		RootDir:       root,
+		Teardown:      true,
 		PreservePaths: []string{"install/saves"},
 		Steps:         []Step{{Step: "deletePath", Path: ".build"}},
 	}); err != nil {
@@ -225,6 +230,7 @@ func TestUserDataPathsResolveAgainstRootNotWorkDir(t *testing.T) {
 
 	if _, err := run(t, Options{
 		RootDir:       root,
+		Teardown:      true,
 		PreservePaths: []string{"install/saves"},
 		Steps: []Step{
 			{Step: "cd", Path: "install"},
@@ -259,12 +265,15 @@ func TestUserDataPathOutsideRootIsRejectedBeforeAnyStepRuns(t *testing.T) {
 	}
 }
 
+// Only a teardown can hit this: during an install the data is out of the tree
+// and deletePath has nothing to spare, so there is no contradiction to report.
 func TestUserDataPathEqualToTheDeletedPathIsAnError(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "install", "saves", "slot1.sav"), "save data")
 
 	_, err := run(t, Options{
 		RootDir:       root,
+		Teardown:      true,
 		PreservePaths: []string{"install"},
 		Steps:         []Step{{Step: "deletePath", Path: "install"}},
 	})
@@ -287,6 +296,7 @@ func TestUserDataPathsInterpolateArgs(t *testing.T) {
 	if _, err := run(t, Options{
 		RootDir:       root,
 		Args:          map[string]string{"region": "us"},
+		Teardown:      true,
 		PreservePaths: []string{"install/${args.region}"},
 		Steps:         []Step{{Step: "deletePath", Path: "install"}},
 	}); err != nil {
@@ -400,5 +410,123 @@ func TestSetAsideSkipsPathsThatDoNotExist(t *testing.T) {
 	}
 	if exists(t, scratch) {
 		t.Error("scratch directory should be gone")
+	}
+}
+
+// An install runs over the previous one. A build shipping its own copy of a
+// file the user has edited is not a delete, so deletePath never sees it — the
+// engine has to move the data out of the way itself.
+func TestRunProtectsUserDataFromABuildWritingOverIt(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "install", "saves", "slot1.sav"), "save data")
+	write(t, filepath.Join(root, "install", "game.config"), "user edited")
+
+	spec := specFromJSON(t, `{
+	  "userDataPaths": ["install/saves", "install/game.config"],
+	  "builds": [{"versions": ["1.0"], "steps": []}]
+	}`)
+	opts := spec.BuildOptions("Linux", "1.0", nil, []string{"1.0"})
+	opts.RootDir = root
+	opts.Steps = []Step{
+		{Step: "touch", Path: "install/game"},
+		// Stands in for a build clearing its config directory and shipping a
+		// fresh default over the user's copy.
+		{Step: "deletePath", Path: "install/game.config"},
+		{Step: "touch", Path: "install/game.config"},
+	}
+
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, "install", "game.config")); got != "user edited" {
+		t.Errorf("the user's copy should win, got %q", got)
+	}
+	if got := readFile(t, filepath.Join(root, "install", "saves", "slot1.sav")); got != "save data" {
+		t.Errorf("saves = %q", got)
+	}
+	if exists(t, filepath.Join(root, userDataScratch)) {
+		t.Error("the scratch directory should be gone")
+	}
+}
+
+// A build that dies must not take the data with it.
+func TestRunRestoresUserDataWhenTheBuildFails(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "install", "saves", "slot1.sav"), "save data")
+
+	_, err := run(t, Options{
+		RootDir:       root,
+		PreservePaths: []string{"install/saves"},
+		Steps:         []Step{{Step: "deletePath", Path: "../escape"}},
+	})
+	if err == nil {
+		t.Fatal("expected the run to fail")
+	}
+	if got := readFile(t, filepath.Join(root, "install", "saves", "slot1.sav")); got != "save data" {
+		t.Errorf("saves after a failed build = %q", got)
+	}
+	if exists(t, filepath.Join(root, userDataScratch)) {
+		t.Error("the scratch directory should be gone")
+	}
+}
+
+// A teardown is protected by deletePath alone. Setting the data aside as well
+// would leave every uninstall with an install directory holding just the saves.
+func TestTeardownDoesNotSetUserDataAside(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "install", "saves", "slot1.sav"), "save data")
+	write(t, filepath.Join(root, "install", "game"), "binary")
+
+	spec := specFromJSON(t, `{
+	  "userDataPaths": ["install/saves"],
+	  "uninstallSteps": [{"step": "deletePath", "path": "install"}],
+	  "builds": [{"versions": ["1.0"], "steps": []}]
+	}`)
+	opts := spec.TeardownOptions("Linux", "1.0", nil, []string{"1.0"})
+	opts.RootDir = root
+	if !opts.Teardown || !opts.SkipDependencyCheck {
+		t.Fatal("TeardownOptions should set Teardown and skip the dependency check")
+	}
+
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, "install", "saves", "slot1.sav")); got != "save data" {
+		t.Errorf("saves = %q", got)
+	}
+	if exists(t, filepath.Join(root, "install", "game")) {
+		t.Error("the program should have been removed")
+	}
+}
+
+// Assembling Options by hand is one chance to forget per field, and the cost of
+// forgetting the last one is a deleted save file.
+func TestBuildOptionsCarriesEverySpecDerivedField(t *testing.T) {
+	spec := specFromJSON(t, `{
+	  "dependencies": ["make"],
+	  "userDataPaths": ["install/saves"],
+	  "builds": [{
+	    "versions": {"1.0": {"tag": "v1.0"}},
+	    "targetPlatforms": {"Linux": {"slug": "linux"}},
+	    "steps": [{"step": "touch", "path": "x"}]
+	  }]
+	}`)
+	opts := spec.BuildOptions("Linux", "1.0", map[string]string{"region": "us"}, []string{"1.0"})
+
+	for name, ok := range map[string]bool{
+		"Steps":         len(opts.Steps) == 1,
+		"Dependencies":  len(opts.Dependencies) == 1,
+		"Args":          opts.Args["region"] == "us",
+		"PlatformVars":  opts.PlatformVars["slug"] == "linux",
+		"VersionVars":   opts.VersionVars["tag"] == "v1.0",
+		"PreservePaths": len(opts.PreservePaths) == 1,
+		"Platform":      opts.Platform == "Linux",
+		"Version":       opts.Version == "1.0",
+		"VersionOrder":  len(opts.VersionOrder) == 1,
+		"Teardown":      !opts.Teardown,
+	} {
+		if !ok {
+			t.Errorf("BuildOptions did not carry %s", name)
+		}
 	}
 }

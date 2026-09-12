@@ -12,6 +12,10 @@ import (
 // confinement boundary and every rename is on one filesystem.
 const tmpPrefix = ".tmp-"
 
+// userDataScratch is where an install's user data waits out the build. It sits
+// at the root of the run, dot-prefixed, and is removed when the data goes back.
+const userDataScratch = ".tmp-userdata"
+
 // preservedUnder returns the run's preserved paths that live inside target, as
 // paths relative to it. A preserved path elsewhere in the tree is not this
 // delete's concern; one that *is* the target is a contradiction and an error,
