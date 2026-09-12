@@ -15,21 +15,32 @@ import (
 type Spec struct {
 	// Versions this build produces, oldest first. Declaration order across the
 	// whole file is the version hierarchy that ordered `if` comparisons use.
-	Versions []string `json:"versions,omitempty"`
+	Versions []string `json:"-"`
 	// Version is the superseded scalar form, still read so spec files written
 	// before Versions existed keep working. Parsing folds it into Versions.
-	Version         string             `json:"version,omitempty"`
-	TargetPlatforms []string           `json:"targetPlatforms,omitempty"`
-	Dependencies    []string           `json:"dependencies,omitempty"`
-	Args            map[string]ArgSpec `json:"args,omitempty"`
-	Steps           []Step             `json:"steps"`
-	BuildPaths      []string           `json:"buildPaths,omitempty"`
+	Version string `json:"version,omitempty"`
+	// TargetPlatforms are the platforms this build covers. Both fields are
+	// filled by UnmarshalJSON, which accepts either an array of names or an
+	// object binding variables to each — see decodeSelector.
+	TargetPlatforms []string `json:"-"`
+	// PlatformVars binds ${platform.*} per platform; nil for the array form.
+	PlatformVars map[string]map[string]string `json:"-"`
+	// VersionVars binds ${version.*} per version; nil for the array form.
+	VersionVars  map[string]map[string]string `json:"-"`
+	Dependencies []string                     `json:"dependencies,omitempty"`
+	Args         map[string]ArgSpec           `json:"args,omitempty"`
+	Steps        []Step                       `json:"steps"`
+	BuildPaths   []string                     `json:"buildPaths,omitempty"`
 	// UserDataPaths are paths holding data the program's user owns — saves,
 	// configuration — living inside a tree that a delete would otherwise remove
 	// wholesale. They resolve against RootDir, not the working directory,
 	// because they describe the item rather than any one step's position in it.
-	UserDataPaths  []string `json:"userDataPaths,omitempty"`
-	UninstallSteps []Step   `json:"uninstallSteps,omitempty"`
+	// Declared for the file and copied into every build; a build cannot declare
+	// its own — see Spec.UnmarshalJSON.
+	UserDataPaths []string `json:"-"`
+	// UninstallSteps is the file's teardown sequence, copied into every build.
+	// A build cannot declare its own — see Spec.UnmarshalJSON.
+	UninstallSteps []Step `json:"-"`
 }
 
 // ArgSpec describes a single user-configurable install argument.
@@ -183,10 +194,12 @@ func ParseSpecFile(data []byte) (*SpecFile, error) {
 		if b.BuildPaths == nil && h.BuildPaths != nil {
 			b.BuildPaths = *h.BuildPaths
 		}
-		if b.UserDataPaths == nil && h.UserDataPaths != nil {
+		// File-level only, so there is no build value to preserve.
+		if h.UserDataPaths != nil {
 			b.UserDataPaths = *h.UserDataPaths
 		}
-		if b.UninstallSteps == nil && h.UninstallSteps != nil {
+		// File-level only, so there is no build value to preserve.
+		if h.UninstallSteps != nil {
 			b.UninstallSteps = *h.UninstallSteps
 		}
 	}

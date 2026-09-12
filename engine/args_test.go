@@ -24,26 +24,26 @@ func TestUndeclaredArgsFindsWhatNothingDeclares(t *testing.T) {
 	  "builds": [{
 	    "versions": ["1.0"],
 	    "steps": [
-	      {"step": "make", "args": ["VERSION=$romVersion", "MOD=${textureMod}"]},
-	      {"step": "move", "src": "build/${romVersion}_pc", "dest": "install"}
+	      {"step": "make", "args": ["VERSION=${args.romVersion}", "MOD=${args.textureMod}"]},
+	      {"step": "move", "src": "build/${args.romVersion}_pc", "dest": "install"}
 	    ]
 	  }]
 	}`)
 
 	got := UndeclaredArgs(spec)
-	if want := []string{"romVersion"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"args.romVersion"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("UndeclaredArgs = %v, want %v", got, want)
 	}
 }
 
-// $platform and $version are injected for every run, so using them without an
+// ${platform} and ${version} are injected for every run, so using them without an
 // args entry is correct rather than an oversight.
 func TestUndeclaredArgsAllowsInjectedNames(t *testing.T) {
 	spec := specFromJSON(t, `[{
 	  "versions": ["1.0"],
 	  "steps": [
-	    {"step": "fetch", "url": "https://example.test/$version/x-$platform.zip", "dest": "a.zip"},
-	    {"step": "run", "cmd": "sh", "if": "$platform == Linux"}
+	    {"step": "fetch", "url": "https://example.test/${version}/x-${platform}.zip", "dest": "a.zip"},
+	    {"step": "run", "cmd": "sh", "if": "${platform} == Linux"}
 	  ]
 	}]`)
 
@@ -55,14 +55,16 @@ func TestUndeclaredArgsAllowsInjectedNames(t *testing.T) {
 // uninstallSteps are interpolated the same way steps are, and are the ones least
 // likely to be exercised before a release.
 func TestUndeclaredArgsCoversUninstallSteps(t *testing.T) {
-	spec := specFromJSON(t, `[{
-	  "versions": ["1.0"],
-	  "steps": [{"step": "createDir", "path": "install"}],
-	  "uninstallSteps": [{"step": "deletePath", "path": "install/$flavour"}]
-	}]`)
+	spec := specFromJSON(t, `{
+	  "uninstallSteps": [{"step": "deletePath", "path": "install/${args.flavour}"}],
+	  "builds": [{
+	    "versions": ["1.0"],
+	    "steps": [{"step": "createDir", "path": "install"}]
+	  }]
+	}`)
 
-	if got := UndeclaredArgs(spec); len(got) != 1 || got[0] != "flavour" {
-		t.Errorf("UndeclaredArgs = %v, want [flavour]", got)
+	if got := UndeclaredArgs(spec); len(got) != 1 || got[0] != "args.flavour" {
+		t.Errorf("UndeclaredArgs = %v, want [args.flavour]", got)
 	}
 }
 
@@ -73,11 +75,11 @@ func TestUndeclaredArgsCoversUninstallSteps(t *testing.T) {
 func TestUndeclaredArgsSeesHostStepFields(t *testing.T) {
 	spec := specFromJSON(t, `[{
 	  "versions": ["1.0"],
-	  "steps": [{"step": "portforge:gogDownload", "productId": "$gogId", "into": "depot"}]
+	  "steps": [{"step": "portforge:gogDownload", "productId": "${args.gogId}", "into": "depot"}]
 	}]`)
 
-	if got := UndeclaredArgs(spec); len(got) != 1 || got[0] != "gogId" {
-		t.Errorf("UndeclaredArgs = %v, want [gogId]", got)
+	if got := UndeclaredArgs(spec); len(got) != 1 || got[0] != "args.gogId" {
+		t.Errorf("UndeclaredArgs = %v, want [args.gogId]", got)
 	}
 }
 
@@ -85,13 +87,13 @@ func TestUndeclaredArgsSeesHostStepFields(t *testing.T) {
 // are the fallback.
 func TestUndeclaredArgsWithoutRawJSON(t *testing.T) {
 	spec := &Spec{Steps: []Step{
-		{Step: "move", Src: "build/$flavour", Dest: "install"},
-		{Step: "run", Cmd: "sh", Args: []string{"-c", "echo ${greeting}"}},
-		{Step: "run", Cmd: "sh", Env: map[string]string{"OUT": "$flavour"}},
+		{Step: "move", Src: "build/${args.flavour}", Dest: "install"},
+		{Step: "run", Cmd: "sh", Args: []string{"-c", "echo ${args.greeting}"}},
+		{Step: "run", Cmd: "sh", Env: map[string]string{"OUT": "${args.flavour}"}},
 	}}
 
 	got := UndeclaredArgs(spec)
-	if want := []string{"flavour", "greeting"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"args.flavour", "args.greeting"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("UndeclaredArgs = %v, want %v", got, want)
 	}
 }
@@ -101,7 +103,7 @@ func TestUndeclaredArgsOnACleanSpec(t *testing.T) {
 	  "args": {"region": {"type": "string", "label": "Region"}},
 	  "builds": [{
 	    "versions": ["1.0"],
-	    "steps": [{"step": "move", "src": "build/${region}_pc", "dest": "install"}]
+	    "steps": [{"step": "move", "src": "build/${args.region}_pc", "dest": "install"}]
 	  }]
 	}`)
 

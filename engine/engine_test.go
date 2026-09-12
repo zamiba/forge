@@ -12,11 +12,11 @@ import (
 func TestInterpolate(t *testing.T) {
 	args := map[string]string{"romVersion": "us", "empty": ""}
 	cases := []struct{ in, want string }{
-		{"baserom.$romVersion.z64", "baserom.us.z64"},
+		{"baserom.${romVersion}.z64", "baserom.us.z64"},
 		{"build/${romVersion}_pc", "build/us_pc"},
 		{"no vars here", "no vars here"},
-		{"$empty/x", "/x"},
-		{"$unknown", "$unknown"}, // unknown names survive rather than blanking
+		{"${empty}/x", "/x"},
+		{"${unknown}", "${unknown}"}, // unknown names survive rather than blanking
 		{"${unknown}/y", "${unknown}/y"},
 	}
 	for _, c := range cases {
@@ -88,10 +88,10 @@ func TestRunFileSteps(t *testing.T) {
 		RootDir: root,
 		Args:    map[string]string{"name": "game"},
 		Steps: []Step{
-			{Step: "createDir", Path: "build/${name}"},
-			{Step: "copy", Src: "source.txt", Dest: "build/${name}/copied.txt"},
-			{Step: "touch", Path: "build/${name}/marker"},
-			{Step: "move", Src: "build/${name}", Dest: "install"},
+			{Step: "createDir", Path: "build/${args.name}"},
+			{Step: "copy", Src: "source.txt", Dest: "build/${args.name}/copied.txt"},
+			{Step: "touch", Path: "build/${args.name}/marker"},
+			{Step: "move", Src: "build/${args.name}", Dest: "install"},
 			{Step: "deletePath", Path: "build"},
 			{Step: "defineExecutable", Executable: "install/copied.txt", Title: "Play"},
 		},
@@ -162,7 +162,7 @@ func TestConditionalStepsAreSkippedAndNotCounted(t *testing.T) {
 		Args: map[string]string{"mod": "none"},
 		Steps: []Step{
 			{Step: "createDir", Path: "always"},
-			{Step: "createDir", Path: "never", If: "${mod} != none"},
+			{Step: "createDir", Path: "never", If: "${args.mod} != none"},
 			{Step: "createDir", Path: "also-always"},
 		},
 		Events: func(e Event) {
@@ -251,7 +251,7 @@ func TestCopyUsesRegisteredProvider(t *testing.T) {
 	_, err := run(t, Options{
 		RootDir: root,
 		Args:    map[string]string{"region": "us"},
-		Steps:   []Step{{Step: "copy", From: "rom", Src: "Super Mario 64 (${region})", Dest: "baserom.z64"}},
+		Steps:   []Step{{Step: "copy", From: "rom", Src: "Super Mario 64 (${args.region})", Dest: "baserom.z64"}},
 		Providers: map[string]Provider{
 			"rom": ProviderFunc(func(_ context.Context, req ProviderRequest) (string, error) {
 				gotSrc = req.Src

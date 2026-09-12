@@ -6,23 +6,33 @@ import (
 	"strings"
 )
 
-var argRe = regexp.MustCompile(`\$\{(\w+)\}|\$(\w+)`)
+// argRe matches an interpolated reference. Braces are required: a name may be
+// namespaced with a dot, and without braces there is no way to tell where
+// ${platform.slug}.zip ends and the literal text begins.
+var argRe = regexp.MustCompile(`\$\{([\w.]+)\}`)
 
-// Interpolate replaces $name and ${name} with values from args. References to
-// names not present in args are left untouched rather than blanked, so a typo
-// surfaces as a visibly wrong path instead of a silently truncated one.
+// bareArgRe matches the unbraced form that older specs used. Interpolate no
+// longer substitutes it — UndeclaredArgs reports it instead, so a spec written
+// against the old syntax fails a check rather than silently comparing the
+// literal text "$platform" against something.
+var bareArgRe = regexp.MustCompile(`\$(\w+)`)
+
+// Interpolate replaces ${name} with values from args.
+//
+// Names are namespaced: ${args.region} is a user-configurable argument,
+// ${platform.slug} and ${version.tag} are variables bound by the build's
+// targetPlatforms and versions tables, and bare ${platform} and ${version} are
+// the selected platform name and version string themselves.
+//
+// References to names not present in args are left untouched rather than
+// blanked, so a typo surfaces as a visibly wrong path instead of a silently
+// truncated one.
 func Interpolate(s string, args map[string]string) string {
 	if s == "" || !strings.ContainsRune(s, '$') {
 		return s
 	}
 	return argRe.ReplaceAllStringFunc(s, func(match string) string {
-		var key string
-		if strings.HasPrefix(match, "${") {
-			key = match[2 : len(match)-1]
-		} else {
-			key = match[1:]
-		}
-		if v, ok := args[key]; ok {
+		if v, ok := args[match[2:len(match)-1]]; ok {
 			return v
 		}
 		return match

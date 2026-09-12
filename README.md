@@ -37,8 +37,8 @@ Common flags:
 | --- | --- | --- |
 | `--spec` | `.forge.json` | Path to the spec file. Falls back to `.install.json` when the default is used and no `.forge.json` exists. |
 | `--dir` | `.` | Root directory the steps run in. |
-| `--platform` | host OS | Platform to build for, matched against `targetPlatforms`. Injected as `$platform`. |
-| `--version` | see below | Version to build. Defaults to the file's `defaultVersion`, else the newest declared. Injected as `$version`. |
+| `--platform` | host OS | Platform to build for, matched against `targetPlatforms`. Injected as `${platform}`. |
+| `--version` | see below | Version to build. Defaults to the file's `defaultVersion`, else the newest declared. Injected as `${version}`. |
 | `--arg NAME=VALUE` | — | Supply an install argument. Repeatable. |
 | `--provider NAME=DIR` | — | Back a `copy` step's `from` with a directory. Repeatable. |
 | `--events` | `pretty` | `pretty`, `ndjson`, or `none`. |
@@ -79,8 +79,8 @@ The other is an object whose top level carries settings shared across builds:
 A header value is a **default**: a build that declares the same field replaces it
 outright rather than merging with it, and `"dependencies": []` on a build means it
 needs none rather than that it inherits. Only the declarative fields —
-`dependencies`, `args`, `buildPaths`, `userDataPaths`, `uninstallSteps` — can be
-defaulted this way.
+`dependencies`, `args`, `buildPaths` — can be defaulted this way. `uninstallSteps` and
+`userDataPaths` are file-level *only*: see [User data](#user-data).
 A build's `steps` are always written out in full, because merging two sequences has
 no obvious meaning and every scheme for it makes specs harder to read than the
 duplication does.
@@ -107,35 +107,32 @@ A full build:
     { "step": "createDir", "path": ".build" },
     { "step": "fetch", "url": "https://example.com/source.zip", "dest": ".build/source.zip" },
     { "step": "extract", "src": ".build/source.zip", "dest": ".build" },
-    { "step": "copy", "from": "rom", "src": "Super Mario 64 (USA)", "dest": ".build/baserom.${region}.z64" },
-    { "step": "run", "cmd": "make", "args": ["VERSION=${region}"] },
-    { "step": "move", "src": ".build/build/${region}_pc", "dest": "install" },
+    { "step": "copy", "from": "rom", "src": "Super Mario 64 (USA)", "dest": ".build/baserom.${args.region}.z64" },
+    { "step": "run", "cmd": "make", "args": ["VERSION=${args.region}"] },
+    { "step": "move", "src": ".build/build/${args.region}_pc", "dest": "install" },
     { "step": "deletePath", "path": ".build" },
-    { "step": "defineExecutable", "executable": "install/sm64.${region}.f3dex2e", "title": "Play" }
-  ],
-  "uninstallSteps": [
-    { "step": "deletePath", "path": "install" }
+    { "step": "defineExecutable", "executable": "install/sm64.${args.region}.f3dex2e", "title": "Play" }
   ]
 }]
 ```
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `versions` | string[] | The versions this build produces, oldest first. |
+| `versions` | string[] \| object | The versions this build produces, oldest first. The object form binds variables per version. |
 | `version` | string | Superseded scalar form of `versions`, still read. |
-| `targetPlatforms` | string[] | `"Linux"`, `"Mac"`, `"Windows"`. Omit to match every platform. |
+| `targetPlatforms` | string[] \| object | `"Linux"`, `"Mac"`, `"Windows"`. Omit to match every platform. The object form binds variables per platform. |
 | `dependencies` | string[] | Commands that must be on `PATH`. Also the allowlist for `run` — see below. |
 | `args` | object | User-configurable parameters. |
 | `steps` | object[] | The ordered build sequence. |
-| `uninstallSteps` | object[] | Optional teardown sequence. |
 | `buildPaths` | string[] | Directories a host may delete to clean up after a failed run. |
-| `userDataPaths` | string[] | Paths a `deletePath` must leave behind — see below. |
 
 File-level only:
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `defaultVersion` | string | The version a host should offer first. Must be one a build declares. |
+| `uninstallSteps` | object[] | Optional teardown sequence, shared by every build. |
+| `userDataPaths` | string[] | Paths a `deletePath` must leave behind — see [User data](#user-data). |
 | `builds` | object[] | The builds themselves. Required in the object form. |
 
 ### Versions
@@ -156,9 +153,21 @@ violated, so it is worth checking deliberately.
 
 Each arg is `choice` (a fixed set of values) or `string` (free text), and gets a `label` for the host to display. A `default` is used when the host supplies no value; a `choice` arg with neither a value nor a default is an error rather than a silent empty string.
 
-Any string field in a step supports `$name` and `${name}` substitution. Use the braces when the name is followed by more characters: `${region}_pc`. A name with no matching arg is left as written rather than blanked, so a typo shows up as a visibly wrong path instead of a truncated one.
+Any string field in a step supports `${...}` substitution. **Braces are required**, and every reference is namespaced:
 
-That is the right behaviour once a build is running and a poor one before it starts: nothing fails until the step carrying the reference executes, and what surfaces then is the invoked tool's complaint about a nonsensical argument rather than anything naming the spec. **`forge check` reports every `$name` that no arg declares**, which is where a mistake like this should be caught. It is a check rather than a run-time error because a literal dollar sign is not always a mistake — a step may pass one to a tool with its own idea of what it means.
+| Reference | Resolves to |
+| --- | --- |
+| `${args.region}` | A user-configurable argument declared in `args`. |
+| `${platform}` | The platform this run is building for. |
+| `${version}` | The version being built. |
+| `${platform.slug}` | A variable the selected platform binds — see [Platform and version variables](#platform-and-version-variables). |
+| `${version.tag}` | A variable the selected version binds. |
+
+A name with no matching value is left as written rather than blanked, so a typo shows up as a visibly wrong path instead of a truncated one.
+
+That is the right behaviour once a build is running and a poor one before it starts: nothing fails until the step carrying the reference executes, and what surfaces then is the invoked tool's complaint about a nonsensical argument rather than anything naming the spec. **`forge check` reports every `${name}` that resolves to nothing**, which is where a mistake like this should be caught. It is a check rather than a run-time error because a literal dollar sign is not always a mistake — a step may pass one to a tool with its own idea of what it means.
+
+It also reports the superseded unbraced form. `$name` is no longer substituted at all, which fails in the quietest way available: `"if": "$platform == Windows"` compares the literal text against `Windows`, is false forever, and skips its step without a word.
 
 ### Conditional steps
 
@@ -169,14 +178,14 @@ excluded from progress totals.
 `false` or `0`.
 
 ```json
-{ "step": "fetch", "if": "${textureMod} != none", "url": "…", "dest": ".build/textures.7z" }
+{ "step": "fetch", "if": "${args.textureMod} != none", "url": "…", "dest": ".build/textures.7z" }
 ```
 
 `>`, `>=`, `<` and `<=` compare **positions in the version hierarchy**, not parsed
 version numbers:
 
 ```json
-{ "step": "run", "if": "$version >= 1.1.0", "cmd": "./migrate-config.sh" }
+{ "step": "run", "if": "${version} >= 1.1.0", "cmd": "./migrate-config.sh" }
 ```
 
 Nothing here tries to understand a version string, because real ones do not support
@@ -185,33 +194,118 @@ parseable ordering, and a parser that guessed one would fail silently. Both oper
 must be versions the file declares; anything else is an error, so a mistyped
 threshold stops the run instead of quietly disabling a step.
 
-### Reserved arguments
+### Platform and version variables
 
-Two names are set by the engine and rejected if a caller supplies them:
-
-| Name | Value |
-| --- | --- |
-| `$platform` | The platform this run is building for. |
-| `$version` | The version being built. |
-
-`$platform` is the axis that varies *inside* a single build, which is what makes it
+`${platform}` is the axis that varies *inside* a single build, which is what makes it
 worth branching on: one build covering Linux and Windows writes the handful of steps
 that differ with an `if`, and shares the rest.
 
-Reach for it in conditions rather than to assemble upstream names. Writing
-`"url": ".../${platform}.zip"` bets that a project names its artifacts to match, and
-that bet is lost the first time a release tags `1.1-rc4` for a version called
-`1.1 RC4`. Prefer literal URLs branched with `if`, and normalise the local filenames
-you control so the rest of the pipeline stays shared:
+Never assemble an upstream name out of it. Writing `"url": ".../${platform}.zip"` bets
+that a project names its artifacts to match, and that bet is lost the first time a
+release tags `1.1-rc4` for a version called `1.1 RC4`. There are two ways to keep every
+string a spec will ever fetch readable in the file. Branch with `if` and write the URLs
+out:
 
 ```json
-{ "step": "fetch", "if": "$platform == Windows",
+{ "step": "fetch", "if": "${platform} == Windows",
   "url": "https://example.com/releases/1.0.2/Windows.zip", "dest": ".build/package.zip" },
-{ "step": "fetch", "if": "$platform != Windows",
+{ "step": "fetch", "if": "${platform} != Windows",
   "url": "https://example.com/releases/1.0.2/Linux.zip",   "dest": ".build/package.zip" }
 ```
 
-That also means every URL a spec will ever fetch can be found by reading it.
+Or bind the upstream spelling explicitly. `targetPlatforms` and `versions` each take a
+second form: instead of an array of names, an object binding variables to each one.
+This is how a build covers several platforms whose only real difference is what
+upstream calls them.
+
+```json
+{
+  "versions":        { "Barnard Alfa": { "tag": "v2.0.0", "infix": "Barnard-Alfa" } },
+  "targetPlatforms": {
+    "Linux":     { "slug": "linux",         "exe": "starship.appimage" },
+    "Windows":   { "slug": "windows",       "exe": "Starship.exe" },
+    "Mac-arm64": { "slug": "mac-arm64",     "exe": "Starship" },
+    "Mac-x64":   { "slug": "mac-intel-x64", "exe": "Starship" }
+  },
+  "steps": [
+    { "step": "fetch", "url": "https://example.com/download/${version.tag}/Starship-${version.infix}-${platform.slug}.zip", "dest": ".build/package.zip" },
+    { "step": "defineExecutable", "executable": "install/${platform.exe}", "title": "Play" }
+  ]
+}
+```
+
+The keys are yours to name — a port needing a third difference adds a third key — and
+the values are literal upstream strings, so nothing is guessed from the platform name.
+Versions get the same treatment, which is what finally handles a version called
+`1.1 RC4` released under the tag `1.1-rc4`.
+
+Four things to know:
+
+- **`${platform}` and `${version}` still mean the name and the version string**, not a
+  bound value, so existing conditions keep working unchanged.
+- **Declaration order is preserved**, because for `versions` that order is the
+  hierarchy ordered conditions compare against.
+- **Not every entry has to bind the same variables.** A step using one that only some
+  platforms bind is legitimate — it runs for those platforms.
+- **Ordered comparison works on `${version}`, not on a bound value.** `${version.tag}`
+  is not a declared version, so comparing it with `>=` is an error.
+
+A build still asserts that every version × platform combination it covers is
+buildable. The table makes merging easy; it does not make a ragged matrix safe.
+
+### Structuring a spec
+
+Versions and platforms can be laid out three ways, and none of them is the right
+answer on its own. They are not three features — they are three habits built from the
+same two primitives, variables and `if`, and most specs end up mixing them.
+
+**One build per combination.** The plainest form, and the one to reach for when the
+sequences genuinely differ. A port shipping an AppImage on Linux and a zip on Windows
+does not extract, does not move, and does not name its executable the same way; three
+steps in common is not a shared pipeline.
+
+```json
+"builds": [
+  { "targetPlatforms": ["Linux"],   "steps": [ ... ] },
+  { "targetPlatforms": ["Windows"], "steps": [ ... ] }
+]
+```
+
+**One build, conditional steps.** When the shape is shared and a handful of steps
+differ, `if` keeps the common middle in one place and puts the differences where you
+can see them side by side.
+
+```json
+{ "step": "touch", "if": "${platform} == Windows", "path": ".build/config/portable.txt" },
+{ "step": "touch", "if": "${platform} != Windows", "path": ".build/portable.txt" }
+```
+
+**One build, variable tables.** When the steps are identical and only upstream's
+spelling differs, the table collapses them and turns the differences into something
+you can read as a table rather than diff by eye.
+
+```json
+"targetPlatforms": {
+  "Mac-arm64": { "slug": "mac-arm64",     "exe": "Starship" },
+  "Mac-x64":   { "slug": "mac-intel-x64", "exe": "Starship" }
+}
+```
+
+Two things worth weighing when you choose.
+
+A build spanning versions × platforms **asserts every combination of the two is
+buildable**. Merging is what makes that claim, and the table makes merging easy enough
+to make it carelessly. The day a version drops a platform, that build splits again —
+and nothing about the JSON looks wrong when this is violated.
+
+Conditions and tables both keep upstream's strings literal. What none of them permits
+is deriving one: `"url": ".../${platform}.zip"` is the one shape to avoid, because it
+bets on a naming scheme that is not yours to predict.
+
+A reasonable default is to start with one build per platform, and merge only once you
+have written the second and can see that they differ in nothing but names.
+
+---
 
 ---
 
@@ -245,32 +339,35 @@ delete leaves them alone:
 ```json
 {
   "userDataPaths": ["install/saves", "install/game.config"],
+  "uninstallSteps": [
+    { "step": "deletePath", "path": "install" }
+  ],
   "builds": [{
     "versions": ["1.0.0"],
-    "steps": [ ... ],
-    "uninstallSteps": [
-      { "step": "deletePath", "path": "install" }
-    ]
+    "steps": [ ... ]
   }]
 }
 ```
 
-Like the other declarative fields it can be given per build instead, for a program
-that moved its save directory between versions:
+**Both fields are file-level only.** A build declaring either is rejected at parse
+time. Neither varies between builds in practice, and `deletePath` skips a path that is
+not there — so one declaration naming every platform's and every version's leavings is
+correct for all of them. A program that moved its save directory between releases lists
+both places:
 
 ```json
-{
-  "versions": ["0.3.0"],
-  "userDataPaths": ["install/data/saves"],
-  "steps": [ ... ]
-}
+"userDataPaths": ["install/saves", "install/data/saves"]
 ```
 
-It sits beside `uninstallSteps` rather than inside a step because more than one
-thing reads it. A host removing an item may have no `uninstallSteps` to look at,
-and protecting user data across a reinstall over an existing tree runs no uninstall
-sequence at all — PortForge uses the same declaration for both, and to tell the
-user what an uninstall will keep before running it.
+The old location is simply skipped for builds that never had it, and a player upgrading
+from a release that used it keeps what they had. A real difference in *teardown* is an
+`if`, which reaches `uninstallSteps` with `${platform}` and `${version}` bound to what
+was actually installed.
+
+They sit beside the builds rather than inside a step because more than one thing reads
+them. A host removing an item may have no `uninstallSteps` to look at, and protecting
+user data across a reinstall over an existing tree runs no uninstall sequence at all —
+PortForge reads the same declaration for both.
 
 Points worth knowing:
 
@@ -283,11 +380,11 @@ Points worth knowing:
   written no saves.
 - Naming the path being deleted *is* an error, since honouring it would mean
   deleting nothing.
-- `$name` interpolation applies, and `forge check` reports an undeclared reference
-  in a preserved path just as it does in a step.
+- `${name}` interpolation applies, and `forge check` reports an undeclared reference
+  in a user data path just as it does in a step.
 
 The operation is built to survive being killed. The target is set aside with a
-single rename into a `.tmp-` sibling, preserved paths are moved back into a fresh
+single rename into a `.tmp-` sibling, the declared paths are moved back into a fresh
 directory, and only then is the remainder deleted — so nothing is destroyed until
 everything being kept is already in its final place, and re-running after an
 interruption finishes the job rather than starting over. A `.tmp-` directory beside
@@ -297,9 +394,9 @@ a path you delete this way is reserved for that purpose.
 
 ## What a spec can and cannot do
 
-Forge runs specs you may not have written — a catalog of them can be synced from the internet. Three rules bound what one can do:
+Forge runs specs you may not have written — a catalog of them can be synced from the internet. Four rules bound what one can do:
 
-**Variables must be declared.** `forge check` fails on any `$name` a step interpolates that no `args` entry declares, `$platform` and `$version` excepted.
+**Variables must be declared.** `forge check` fails on any `${name}` a step interpolates that resolves to nothing, and on any surviving unbraced `$name`.
 
 **Commands must be declared.** `run` only executes a command named in `dependencies`. Arguments are passed to the process directly and never through a shell, so `cmd` cannot smuggle in a pipeline or a second command. `forge check` reports any `run` whose command is undeclared, before the spec ever executes.
 
@@ -318,32 +415,49 @@ import "github.com/zamiba/forge/engine"
 
 file, _ := engine.LoadSpecFile(".forge.json")
 order := engine.VersionOrder(file.Specs)
-version := file.DefaultVersion
-spec := engine.Select(file.Specs, engine.HostPlatform(), version)
+platform, version := engine.HostPlatform(), file.DefaultVersion
+spec := engine.Select(file.Specs, platform, version)
 args, _ := spec.ResolveArgs(map[string]string{"region": "us"})
+platformVars, versionVars := spec.VarsFor(platform, version)
 
 // What `forge check` reports. A host syncing specs it did not write can run
-// this before building, and fail with the name of the offending variable
+// both before building, and fail with the name of the offending variable
 // rather than six steps later with a compiler's error message.
 if missing := engine.UndeclaredArgs(spec); len(missing) > 0 {
-    return fmt.Errorf("spec uses undeclared args: %v", missing)
+    return fmt.Errorf("spec uses variables nothing declares: %v", missing)
+}
+if stale := engine.UnbracedRefs(spec); len(stale) > 0 {
+    return fmt.Errorf("spec writes these without braces, so they are inert: %v", stale)
 }
 
 res, err := engine.Run(ctx, engine.Options{
     Steps:        spec.Steps,
     Dependencies: spec.Dependencies,
     Args:         args,
-    Platform:     engine.HostPlatform(),
+    PlatformVars: platformVars,
+    VersionVars:  versionVars,
+    Platform:     platform,
     Version:      version,
     VersionOrder: order,
-    RootDir:      installDir,
-    Providers:    map[string]engine.Provider{"rom": myRomLibrary},
-    Events:       func(e engine.Event) { ui.Report(e) },
-    Log:          logFile,
+    // Without this a teardown deletes the user's saves along with the program.
+    PreservePaths: spec.UserDataPaths,
+    RootDir:       installDir,
+    Providers:     map[string]engine.Provider{"rom": myRomLibrary},
+    Events:        func(e engine.Event) { ui.Report(e) },
+    Log:           logFile,
 })
 ```
 
 `Run` blocks until the sequence finishes and honours context cancellation at step boundaries, killing any running subprocess.
+
+`Args` are supplied unnamespaced — `{"region": "us"}`, reached as `${args.region}` —
+and the engine builds the namespaced table itself. The names `platform` and `version`
+are rejected there: nothing can collide with them now that references are namespaced,
+but the reservation is kept so that stays true.
+
+Two helpers exist for tearing an item down without going through a spec.
+`engine.SetAside` and `engine.PutBack` move declared paths out of a tree and return
+them, which is what protects user data when a build runs over an existing install.
 
 ### Providers
 

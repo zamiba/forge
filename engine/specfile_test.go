@@ -164,9 +164,9 @@ func TestEvalConditionInterpolatesBeforeComparing(t *testing.T) {
 	order := []string{"1.0.0", "1.1.0", "1.2.0"}
 	args := map[string]string{"version": "1.1.0"}
 	for expr, want := range map[string]bool{
-		"$version >= 1.1.0": true,
-		"$version > 1.1.0":  false,
-		"$version < 1.2.0":  true,
+		"${version} >= 1.1.0": true,
+		"${version} > 1.1.0":  false,
+		"${version} < 1.2.0":  true,
 	} {
 		got, err := EvalCondition(expr, args, order)
 		if err != nil {
@@ -178,14 +178,14 @@ func TestEvalConditionInterpolatesBeforeComparing(t *testing.T) {
 	}
 }
 
-// $platform is the axis that varies inside one build, so it must reach the steps
+// ${platform} is the axis that varies inside one build, so it must reach the steps
 // and the conditions that branch on it.
 func TestRunInjectsReservedArgs(t *testing.T) {
 	dir := t.TempDir()
 	steps := []Step{
-		{Step: "createDir", Path: "out-$platform-$version"},
-		{Step: "touch", If: "$platform == Windows", Path: "win-only"},
-		{Step: "touch", If: "$platform != Windows", Path: "unix-only"},
+		{Step: "createDir", Path: "out-${platform}-${version}"},
+		{Step: "touch", If: "${platform} == Windows", Path: "win-only"},
+		{Step: "touch", If: "${platform} != Windows", Path: "unix-only"},
 	}
 	if _, err := Run(t.Context(), Options{
 		Steps:    steps,
@@ -206,7 +206,7 @@ func TestRunInjectsReservedArgs(t *testing.T) {
 }
 
 // The host's arg map must come back unmodified: PortForge persists it and
-// replays it on rebuild, so a leaked $platform would fail the reserved check.
+// replays it on rebuild, so a leaked ${platform} would fail the reserved check.
 func TestRunDoesNotMutateCallerArgs(t *testing.T) {
 	args := map[string]string{"renderer": "opengl"}
 	if _, err := Run(t.Context(), Options{
@@ -239,7 +239,7 @@ func TestRunRejectsReservedArgNames(t *testing.T) {
 // An unusable threshold must stop the run rather than quietly skipping a step.
 func TestRunFailsOnBadCondition(t *testing.T) {
 	_, err := Run(t.Context(), Options{
-		Steps:        []Step{{Step: "createDir", If: "$version >= 9.9.9", Path: "x"}},
+		Steps:        []Step{{Step: "createDir", If: "${version} >= 9.9.9", Path: "x"}},
 		RootDir:      t.TempDir(),
 		Version:      "1.0.0",
 		VersionOrder: []string{"1.0.0"},

@@ -26,9 +26,16 @@ type Options struct {
 	Dependencies []string
 
 	// Args are the resolved install argument values, substituted into step
-	// fields as $name / ${name}. The names "platform" and "version" are
-	// reserved and rejected here, since Run injects them itself.
+	// fields as ${args.name}. The names "platform" and "version" are reserved
+	// and rejected here, since Run injects them itself — they cannot collide
+	// under the namespace, but reserving them keeps the option open.
 	Args map[string]string
+
+	// PlatformVars and VersionVars are the variables the selected platform and
+	// version bind, substituted as ${platform.name} and ${version.name}. Hosts
+	// fill them from the spec with Spec.VarsFor.
+	PlatformVars map[string]string
+	VersionVars  map[string]string
 
 	// Platform is the target platform this run builds for, injected as
 	// $platform. It is the axis that varies inside a single build — a spec
@@ -270,9 +277,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, fmt.Errorf("engine: arg %q is reserved and set by the engine", reserved)
 		}
 	}
-	args := make(map[string]string, len(opts.Args)+2)
+	// Every reference is namespaced, so the lookup table is keyed by the full
+	// dotted name and Interpolate stays a plain map lookup.
+	args := make(map[string]string, len(opts.Args)+len(opts.PlatformVars)+len(opts.VersionVars)+2)
 	for k, v := range opts.Args {
-		args[k] = v
+		args["args."+k] = v
+	}
+	for k, v := range opts.PlatformVars {
+		args["platform."+k] = v
+	}
+	for k, v := range opts.VersionVars {
+		args["version."+k] = v
 	}
 	if opts.Platform != "" {
 		args["platform"] = opts.Platform

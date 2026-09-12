@@ -221,13 +221,18 @@ func cmdRun(argv []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	platformVars, versionVars := spec.VarsFor(*f.platform, f.resolved)
+
 	res, err := engine.Run(ctx, engine.Options{
 		Steps:               steps,
 		Dependencies:        spec.Dependencies,
 		Args:                args,
+		PlatformVars:        platformVars,
+		VersionVars:         versionVars,
 		Platform:            *f.platform,
 		Version:             f.resolved,
 		VersionOrder:        f.order,
+		PreservePaths:       spec.UserDataPaths,
 		RootDir:             root,
 		Providers:           providers,
 		Events:              handler,
@@ -305,7 +310,15 @@ func cmdCheck(argv []string) error {
 	// invoked tool's complaint rather than anything naming the spec. Catching it
 	// here is the whole point of a check command.
 	for _, name := range engine.UndeclaredArgs(spec) {
-		problems = append(problems, fmt.Sprintf("$%s is used but not declared in args", name))
+		problems = append(problems, fmt.Sprintf("${%s} is used but nothing declares it", name))
+	}
+
+	// Unbraced references are not interpolated at all, so they fail by doing
+	// nothing rather than by failing. Naming the replacement matters more than
+	// naming the problem here, since every one of these is a spec written
+	// before braces became mandatory.
+	for _, name := range engine.UnbracedRefs(spec) {
+		problems = append(problems, fmt.Sprintf("$%s is not interpolated — write ${%s}, or ${args.%s} for an argument", name, name, name))
 	}
 
 	for _, p := range problems {

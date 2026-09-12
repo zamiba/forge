@@ -1,6 +1,57 @@
 # Changelog
 
-## Unreleased
+## v0.0.5-alpha - 2026-09-11
+
+### Breaking
+
+- **Braces are now required.** `${name}` is interpolated; `$name` is not. The
+  unbraced form failed in the quietest way available — `"if": "$platform ==
+  Windows"` compared the literal text, was false forever, and skipped its step
+  without a word — so `forge check` and `engine.UnbracedRefs` report any that
+  survive. Migrating is mechanical, and the check finds every site.
+
+- **`uninstallSteps` and `userDataPaths` are file-level only.** A build
+  declaring either is now rejected at parse time. Neither varies between builds
+  in practice, and `deletePath` skips a path that is not there — so one
+  declaration naming every platform's and every version's leavings is correct
+  for all of them, a program that moved its save directory lists both places,
+  and a real difference in teardown is an `if`. Accepting them in two places
+  bought nothing and left it ambiguous which one ran. A spec using the bare
+  array form has no file level and must switch to the object form to declare
+  either.
+
+- **Variables are namespaced.** An argument is `${args.region}` rather than
+  `${region}`. `${platform}` and `${version}` are unchanged, and those two names
+  stay reserved even though the namespace makes a collision impossible — it
+  keeps the option open.
+
+### Added
+
+- **`targetPlatforms` and `versions` take an object form** binding variables to
+  each entry, for a build whose platforms differ only in what upstream calls
+  them:
+
+  ```json
+  "targetPlatforms": {
+    "Mac-arm64": { "slug": "mac-arm64",     "exe": "Starship" },
+    "Mac-x64":   { "slug": "mac-intel-x64", "exe": "Starship" }
+  }
+  ```
+
+  Keys are author-named, so a port needing a third difference adds a third key,
+  and the values are literal upstream strings rather than anything derived from
+  a platform name. The version form is what finally handles a version called
+  `1.1 RC4` released under the tag `1.1-rc4`. Declaration order is preserved,
+  since for `versions` that order is the hierarchy ordered conditions compare
+  against.
+
+- `engine.Spec.VarsFor` returns the variables a platform and version bind, for
+  hosts filling in `Options.PlatformVars` and `Options.VersionVars`.
+
+### Fixed
+
+- The CLI never passed a spec's `userDataPaths` to the engine, so
+  `forge --uninstall` deleted user data that `deletePath` was meant to keep.
 
 ## v0.0.4-alpha — 2026-09-10
 

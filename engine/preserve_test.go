@@ -287,7 +287,7 @@ func TestUserDataPathsInterpolateArgs(t *testing.T) {
 	if _, err := run(t, Options{
 		RootDir:       root,
 		Args:          map[string]string{"region": "us"},
-		PreservePaths: []string{"install/${region}"},
+		PreservePaths: []string{"install/${args.region}"},
 		Steps:         []Step{{Step: "deletePath", Path: "install"}},
 	}); err != nil {
 		t.Fatalf("run: %v", err)
@@ -297,30 +297,42 @@ func TestUserDataPathsInterpolateArgs(t *testing.T) {
 	}
 }
 
-func TestUserDataPathsAreHoistedFromTheFileHeader(t *testing.T) {
-	file := []byte(`{
-	  "userDataPaths": ["install/saves"],
+func TestUserDataPathsReachEveryBuildFromTheFile(t *testing.T) {
+	sf, err := ParseSpecFile([]byte(`{
+	  "userDataPaths": ["install/saves", "install/data/saves"],
 	  "builds": [
 	    { "versions": ["1.0"], "steps": [] },
-	    { "versions": ["2.0"], "userDataPaths": ["install/other"], "steps": [] }
+	    { "versions": ["2.0"], "steps": [] }
 	  ]
-	}`)
-	sf, err := ParseSpecFile(file)
+	}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got := sf.Specs[0].UserDataPaths; len(got) != 1 || got[0] != "install/saves" {
-		t.Errorf("build 1 should inherit the header value, got %v", got)
+	for i := range sf.Specs {
+		if got := sf.Specs[i].UserDataPaths; len(got) != 2 {
+			t.Errorf("build %d got %v, want both file-level paths", i, got)
+		}
 	}
-	if got := sf.Specs[1].UserDataPaths; len(got) != 1 || got[0] != "install/other" {
-		t.Errorf("a build's own value should replace the header's, got %v", got)
+}
+
+// A program that moved its save directory between versions lists both places
+// rather than splitting the declaration: the one that is not there is skipped.
+func TestUserDataPathsAreRejectedOnABuild(t *testing.T) {
+	_, err := ParseSpecFile([]byte(`{
+	  "builds": [{ "versions": ["1.0"], "userDataPaths": ["install/saves"], "steps": [] }]
+	}`))
+	if err == nil {
+		t.Fatal("a build declaring userDataPaths should be rejected")
+	}
+	if !strings.Contains(err.Error(), "belongs to the file") {
+		t.Errorf("the error should say where it goes instead: %v", err)
 	}
 }
 
 func TestUndeclaredArgsCoversUserDataPaths(t *testing.T) {
-	spec := &Spec{UserDataPaths: []string{"install/$profile"}}
-	if got := UndeclaredArgs(spec); len(got) != 1 || got[0] != "profile" {
-		t.Errorf("UndeclaredArgs = %v, want [profile]", got)
+	spec := &Spec{UserDataPaths: []string{"install/${args.profile}"}}
+	if got := UndeclaredArgs(spec); len(got) != 1 || got[0] != "args.profile" {
+		t.Errorf("UndeclaredArgs = %v, want [args.profile]", got)
 	}
 }
 

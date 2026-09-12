@@ -30,23 +30,22 @@ func UndeclaredArgs(spec *Spec) []string {
 
 	declared := make(map[string]bool, len(spec.Args)+len(reservedArgs))
 	for name := range spec.Args {
-		declared[name] = true
+		declared["args."+name] = true
 	}
 	for _, name := range reservedArgs {
 		declared[name] = true
 	}
+	// A variable bound by any entry of either table counts as declared. A step
+	// using one that only some platforms bind is legitimate — it runs for those
+	// platforms — so the union is the right set to accept.
+	for _, name := range varNames(spec.PlatformVars) {
+		declared["platform."+name] = true
+	}
+	for _, name := range varNames(spec.VersionVars) {
+		declared["version."+name] = true
+	}
 
-	used := map[string]bool{}
-	for _, steps := range [][]Step{spec.Steps, spec.UninstallSteps} {
-		for _, step := range steps {
-			collectRefs(step, used)
-		}
-	}
-	// User data paths are interpolated like any other path, so a typo in one is
-	// the same class of mistake and worth catching in the same place.
-	for _, p := range spec.UserDataPaths {
-		refsIn(p, used)
-	}
+	used, _ := collectSpecRefs(spec)
 
 	var out []string
 	for name := range used {
@@ -63,11 +62,54 @@ func UndeclaredArgs(spec *Spec) []string {
 // type are covered as well as the builtin ones — interpolation applies to all of
 // them, so a check that only knew about Step's own fields would miss exactly the
 // steps a host had to write itself.
-func collectRefs(step Step, out map[string]bool) {
+// UnbracedRefs returns the names a spec references with the superseded $name
+// syntax, sorted and deduplicated.
+//
+// Braces are required, so an unbraced reference is not interpolated at all. That
+// is quiet in the worst way: "$platform == Windows" compares the literal text
+// against "Windows", is false forever, and skips its step without a word. These
+// cannot be folded into UndeclaredArgs, because the names most likely to appear
+// this way — platform and version — are declared, and would be filtered out
+// precisely when reporting them matters most.
+func UnbracedRefs(spec *Spec) []string {
+	if spec == nil {
+		return nil
+	}
+	_, bare := collectSpecRefs(spec)
+	return sortedKeys(bare)
+}
+
+// collectSpecRefs walks everything in a spec that gets interpolated, returning
+// the braced references and the unbraced ones separately.
+func collectSpecRefs(spec *Spec) (braced, bare map[string]bool) {
+	braced, bare = map[string]bool{}, map[string]bool{}
+	for _, steps := range [][]Step{spec.Steps, spec.UninstallSteps} {
+		for _, step := range steps {
+			collectRefs(step, braced, bare)
+		}
+	}
+	// User data paths are interpolated like any other path, so a typo in one is
+	// the same class of mistake and worth catching in the same place.
+	for _, p := range spec.UserDataPaths {
+		refsIn(p, braced, bare)
+	}
+	return braced, bare
+}
+
+func sortedKeys(set map[string]bool) []string {
+	var out []string
+	for name := range set {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectRefs(step Step, braced, bare map[string]bool) {
 	if len(step.Raw) > 0 {
 		var doc any
 		if err := json.Unmarshal(step.Raw, &doc); err == nil {
-			refsInJSON(doc, out)
+			refsInJSON(doc, braced, bare)
 			return
 		}
 	}
@@ -76,31 +118,36 @@ func collectRefs(step Step, out map[string]bool) {
 		step.If, step.From, step.Src, step.Dest, step.Cmd,
 		step.URL, step.Path, step.Executable, step.Title,
 	}, step.Args...) {
-		refsIn(s, out)
+		refsIn(s, braced, bare)
 	}
 	for k, v := range step.Env {
-		refsIn(k, out)
-		refsIn(v, out)
+		refsIn(k, braced, bare)
+		refsIn(v, braced, bare)
 	}
 }
 
-func refsInJSON(v any, out map[string]bool) {
+func refsInJSON(v any, braced, bare map[string]bool) {
 	switch t := v.(type) {
 	case string:
-		refsIn(t, out)
+		refsIn(t, braced, bare)
 	case []any:
 		for _, e := range t {
-			refsInJSON(e, out)
+			refsInJSON(e, braced, bare)
 		}
 	case map[string]any:
 		for _, e := range t {
-			refsInJSON(e, out)
+			refsInJSON(e, braced, bare)
 		}
 	}
 }
 
-func refsIn(s string, out map[string]bool) {
+func refsIn(s string, braced, bare map[string]bool) {
 	for _, m := range argRe.FindAllStringSubmatch(s, -1) {
-		out[m[1]+m[2]] = true // exactly one of the two groups matched
+		braced[m[1]] = true
+	}
+	// Strip the braced references first, or the bare pattern matches the "$"
+	// that starts each of them.
+	for _, m := range bareArgRe.FindAllStringSubmatch(argRe.ReplaceAllString(s, ""), -1) {
+		bare[m[1]] = true
 	}
 }
