@@ -59,3 +59,43 @@ func DirProvider(root string) Provider {
 		return full, nil
 	})
 }
+
+// FixedProvider answers from paths stated in advance rather than looked up: a
+// host that already knows which file each name should resolve to — an operator
+// at a command line, a test — states the mapping, and the provider does no
+// matching of its own. It is how the CLI serves a spec written against a host
+// with real content knowledge, such as PortForge's ROM library, without
+// acquiring any of that knowledge itself.
+//
+// Named answers a src by name. Default answers the empty src, which a spec
+// uses to mean "whatever this provider has for me" when there is only one
+// thing it could be. Dir answers any other src as a path beneath it, as
+// DirProvider does. A src nothing covers is an error naming what was asked.
+type FixedProvider struct {
+	Default string
+	Named   map[string]string
+	Dir     string
+}
+
+func (p FixedProvider) Resolve(_ context.Context, req ProviderRequest) (string, error) {
+	if path, ok := p.Named[req.Src]; ok {
+		return existingPath(req.From, path)
+	}
+	if req.Src == "" {
+		if p.Default == "" {
+			return "", fmt.Errorf("provider %q: nothing is mapped for an unnamed request", req.From)
+		}
+		return existingPath(req.From, p.Default)
+	}
+	if p.Dir != "" {
+		return DirProvider(p.Dir).Resolve(context.Background(), req)
+	}
+	return "", fmt.Errorf("provider %q: nothing is mapped for %q", req.From, req.Src)
+}
+
+func existingPath(from, path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("provider %q: %w", from, err)
+	}
+	return path, nil
+}

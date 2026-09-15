@@ -264,6 +264,35 @@ func (st *State) resolveProvider(ctx context.Context, step Step) (string, error)
 	})
 }
 
+// bindProviderRefs resolves every provider reference the step carries into the
+// run's args, so Interp substitutes it wherever the step — builtin or
+// host-registered — reads its fields. Each name is resolved once and kept: what
+// a provider returns does not move during a run. A reference to a provider the
+// host never registered fails the step, as a copy from one does.
+func (st *State) bindProviderRefs(ctx context.Context, step Step) error {
+	refs := map[string]bool{}
+	collectRefs(step, refs, map[string]bool{})
+	for name := range refs {
+		if _, bound := st.Args[name]; bound {
+			continue
+		}
+		provider, src, ok := providerRef(name)
+		if !ok {
+			continue
+		}
+		p, registered := st.providers[provider]
+		if !registered {
+			return fmt.Errorf("${%s}: no provider registered for %q", name, provider)
+		}
+		path, err := p.Resolve(ctx, ProviderRequest{From: provider, Src: src, Args: st.Args, Step: step})
+		if err != nil {
+			return fmt.Errorf("${%s}: %w", name, err)
+		}
+		st.Args[name] = path
+	}
+	return nil
+}
+
 // Run executes a step sequence and returns the executables it declared.
 func Run(ctx context.Context, opts Options) (res *Result, rerr error) {
 	if opts.RootDir == "" {
@@ -420,6 +449,13 @@ func Run(ctx context.Context, opts Options) (res *Result, rerr error) {
 		}
 
 		if err := ctx.Err(); err != nil {
+			return fail(StepLabel(step, args), step.Step, index, err)
+		}
+
+		// A provider reference resolves the first time a step uses it, so a
+		// port whose disc lives wherever the host keeps it can hand that path
+		// to its own installer without copying the disc into the run.
+		if err := st.bindProviderRefs(ctx, step); err != nil {
 			return fail(StepLabel(step, args), step.Step, index, err)
 		}
 

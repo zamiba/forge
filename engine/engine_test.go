@@ -3,8 +3,11 @@ package engine
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -517,5 +520,283 @@ func TestVersions(t *testing.T) {
 	// Platforms of same-version specs are merged, not duplicated.
 	if len(got[1].Platforms) != 3 {
 		t.Errorf("1.0 platforms = %v, want Linux, Windows and Mac merged", got[1].Platforms)
+	}
+}
+
+// A port that ships its own installer wants to run it at install time, which
+// means running a file the previous steps produced rather than a command on
+// PATH. That is a local command: declared with its path, resolved inside the
+// run directory.
+func TestRunStepExecutesALocalCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script")
+	}
+	root := t.TempDir()
+	tool := filepath.Join(root, "install", "launcher")
+	if err := os.MkdirAll(filepath.Dir(tool), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Records where it ran from and what it was given, so the test can see
+	// both the working directory and the arguments arrive intact.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" > \"$(dirname \"$0\")/ran\"\n"
+	if err := os.WriteFile(tool, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := run(t, Options{
+		RootDir:      root,
+		Dependencies: []string{"install/launcher"},
+		Steps: []Step{{
+			Step: "run", Cmd: "install/launcher",
+			Args: []string{"--install-dir", "install", "--extract-only"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("a declared local command should run: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "install", "ran"))
+	if err != nil {
+		t.Fatalf("the local command did not run: %v", err)
+	}
+	want := root + "\n--install-dir\ninstall\n--extract-only\n"
+	if string(got) != want {
+		t.Errorf("local command saw %q, want %q", got, want)
+	}
+}
+
+// A local command is still a command: undeclared, it does not run.
+func TestLocalCommandMustBeDeclared(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(t, Options{
+		RootDir: root,
+		Steps:   []Step{{Step: "run", Cmd: "./tool"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "add \"./tool\" to its dependencies") {
+		t.Errorf("got %v, want an undeclared-command error", err)
+	}
+}
+
+// The path form is confined like every other step path: a declared "../x" is
+// declared, but it still cannot leave the run directory.
+func TestLocalCommandCannotEscapeTheRunDirectory(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "run")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "outside"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(t, Options{
+		RootDir:      root,
+		Dependencies: []string{"../outside"},
+		Steps:        []Step{{Step: "run", Cmd: "../outside"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside the run directory") {
+		t.Errorf("got %v, want the path to be refused", err)
+	}
+}
+
+// A bare name never resolves against the run directory. Otherwise an archive
+// that happened to contain a file called "true" could shadow the real command
+// for every spec that declared it.
+func TestBareCommandIsNeverLookedUpInTheRunDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script")
+	}
+	root := t.TempDir()
+	shadow := filepath.Join(root, "true")
+	if err := os.WriteFile(shadow, []byte("#!/bin/sh\ntouch shadowed\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(t, Options{
+		RootDir:      root,
+		Dependencies: []string{"true"},
+		Steps:        []Step{{Step: "run", Cmd: "true"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "shadowed")); err == nil {
+		t.Error("the file in the run directory ran instead of the command on PATH")
+	}
+}
+
+func TestDependencyCheckSkipsLocalCommands(t *testing.T) {
+	// The file does not exist yet; that is the point — it is produced by the
+	// steps. Only the PATH lookup is expected to fail.
+	err := CheckDependencies([]string{"install/launcher", "no-such-command-anywhere"})
+	if err == nil {
+		t.Fatal("expected the missing PATH command to be reported")
+	}
+	if strings.Contains(err.Error(), "install/launcher") {
+		t.Errorf("a local command was checked against PATH: %v", err)
+	}
+	if err := CheckDependencies([]string{"install/launcher"}); err != nil {
+		t.Errorf("a local command alone should pass the check: %v", err)
+	}
+}
+
+// A ${romPath} reference hands a step the path a provider resolves, so a port's
+// own installer can read a disc where it lives rather than after a copy.
+func TestProviderReferenceResolvesInStepFields(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script")
+	}
+	root := t.TempDir()
+	rom := filepath.Join(t.TempDir(), "Pikmin (USA) (Rev 1).iso")
+	if err := os.WriteFile(rom, []byte("disc"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := filepath.Join(root, "tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > args\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests []ProviderRequest
+	_, err := run(t, Options{
+		RootDir:      root,
+		Dependencies: []string{"./tool"},
+		Steps: []Step{
+			{Step: "run", Cmd: "./tool", Args: []string{"--rom", "${romPath}", "--disc2", "${romPath.Disc 2}"}},
+			// The same reference again: resolved once, not per step.
+			{Step: "run", Cmd: "./tool", Args: []string{"${romPath}"}},
+		},
+		Providers: map[string]Provider{
+			"rom": ProviderFunc(func(_ context.Context, req ProviderRequest) (string, error) {
+				requests = append(requests, req)
+				if req.Src == "" {
+					return rom, nil
+				}
+				return "/discs/" + req.Src, nil
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, "args"))
+	if string(got) != rom+"\n" {
+		t.Errorf("second step got %q, want the resolved path", got)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("provider asked %d times, want once per distinct reference", len(requests))
+	}
+	srcs := []string{requests[0].Src, requests[1].Src}
+	sort.Strings(srcs)
+	if srcs[0] != "" || srcs[1] != "Disc 2" {
+		t.Errorf("provider received srcs %q, want \"\" and \"Disc 2\"", srcs)
+	}
+}
+
+func TestProviderReferenceToAnUnregisteredProviderFails(t *testing.T) {
+	_, err := run(t, Options{
+		Steps: []Step{{Step: "touch", Path: "${depotPath}/marker"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `no provider registered for "depot"`) {
+		t.Errorf("got %v, want a missing provider error", err)
+	}
+}
+
+func TestProviderErrorsFailTheStepThatAskedFor(t *testing.T) {
+	_, err := run(t, Options{
+		Steps: []Step{{Step: "touch", Path: "${romPath}"}},
+		Providers: map[string]Provider{
+			"rom": ProviderFunc(func(context.Context, ProviderRequest) (string, error) {
+				return "", errors.New("no dump this port accepts is in your library")
+			}),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "${romPath}: no dump this port accepts") {
+		t.Errorf("got %v, want the provider's message under the reference", err)
+	}
+}
+
+// A reference inside a skipped step is never resolved, so a build whose
+// Windows steps need a disc does not fail on Linux for want of one.
+func TestSkippedStepsDoNotResolveProviderReferences(t *testing.T) {
+	asked := false
+	_, err := run(t, Options{
+		Platform: "Linux",
+		Steps:    []Step{{Step: "touch", If: "${platform} == Windows", Path: "${romPath}"}},
+		Providers: map[string]Provider{
+			"rom": ProviderFunc(func(context.Context, ProviderRequest) (string, error) {
+				asked = true
+				return "", errors.New("should not be asked")
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked {
+		t.Error("a skipped step's reference was resolved")
+	}
+}
+
+func TestProviderRef(t *testing.T) {
+	cases := []struct {
+		name, provider, src string
+		ok                  bool
+	}{
+		{"romPath", "rom", "", true},
+		{"romPath.Disc 2", "rom", "Disc 2", true},
+		{"depotPath.a.b", "depot", "a.b", true},
+		{"Path", "", "", false},     // no provider name
+		{"romPath.", "", "", false}, // a dot with nothing after it
+		{"args.romPath", "", "", false},
+		{"platform.slug", "", "", false},
+		{"rom", "", "", false},
+	}
+	for _, c := range cases {
+		provider, src, ok := providerRef(c.name)
+		if provider != c.provider || src != c.src || ok != c.ok {
+			t.Errorf("providerRef(%q) = %q, %q, %v; want %q, %q, %v", c.name, provider, src, ok, c.provider, c.src, c.ok)
+		}
+	}
+}
+
+func TestFixedProviderAnswersFromStatedPaths(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	pikmin := write("pikmin.iso")
+	disc1 := write("bd1.iso")
+	beneath := write("beneath.bin")
+
+	p := FixedProvider{Default: pikmin, Named: map[string]string{"Disc 1": disc1}, Dir: dir}
+	ask := func(src string) (string, error) {
+		return p.Resolve(context.Background(), ProviderRequest{From: "rom", Src: src})
+	}
+	if got, _ := ask(""); got != pikmin {
+		t.Errorf("unnamed request = %q, want the default", got)
+	}
+	if got, _ := ask("Disc 1"); got != disc1 {
+		t.Errorf("named request = %q, want the mapping", got)
+	}
+	if got, _ := ask("beneath.bin"); got != beneath {
+		t.Errorf("unmapped request = %q, want the file beneath Dir", got)
+	}
+	if _, err := ask("Disc 2"); err == nil || !strings.Contains(err.Error(), "Disc 2") {
+		t.Errorf("an unmapped name with no file beneath Dir should name what was asked: %v", err)
+	}
+
+	// Nothing mapped for the unnamed request, and no Dir to fall back on.
+	bare := FixedProvider{Named: map[string]string{"Disc 1": disc1}}
+	if _, err := bare.Resolve(context.Background(), ProviderRequest{From: "rom"}); err == nil || !strings.Contains(err.Error(), "unnamed request") {
+		t.Errorf("got %v, want an error about the unnamed request", err)
+	}
+	// A mapping to a file that is gone is an error at resolve time, not a path.
+	gone := FixedProvider{Default: filepath.Join(dir, "missing.iso")}
+	if _, err := gone.Resolve(context.Background(), ProviderRequest{From: "rom"}); err == nil {
+		t.Error("a missing default should be an error")
 	}
 }

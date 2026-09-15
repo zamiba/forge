@@ -153,11 +153,53 @@ func parseKeyValues(items []string, what string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseProviders builds one provider per name from the --provider flags. The
+// key is the provider's name, or NAME.SRC to answer a request by name — the
+// same shape as the reference the spec writes, ${NAMEPath.SRC}, split at the
+// first dot the same way, so the src may contain anything. The value is a
+// path, unconstrained: a directory serves requests beneath it, a file answers
+// the unnamed request or the named one its key names.
+func parseProviders(items []string) (map[string]engine.Provider, error) {
+	fixed := map[string]*engine.FixedProvider{}
+	for _, item := range items {
+		key, path, ok := strings.Cut(item, "=")
+		if !ok || key == "" || path == "" {
+			return nil, fmt.Errorf("invalid provider %q: expected NAME=PATH or NAME.SRC=PATH", item)
+		}
+		name, src, named := strings.Cut(key, ".")
+		if name == "" || (named && src == "") {
+			return nil, fmt.Errorf("invalid provider %q: expected NAME=PATH or NAME.SRC=PATH", item)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid provider %q: %w", item, err)
+		}
+		p := fixed[name]
+		if p == nil {
+			p = &engine.FixedProvider{Named: map[string]string{}}
+			fixed[name] = p
+		}
+		switch {
+		case named:
+			p.Named[src] = path
+		case info.IsDir():
+			p.Dir = path
+		default:
+			p.Default = path
+		}
+	}
+	providers := make(map[string]engine.Provider, len(fixed))
+	for name, p := range fixed {
+		providers[name] = *p
+	}
+	return providers, nil
+}
+
 func cmdRun(argv []string) error {
 	f := newSpecFlags("run")
 	var argValues, providerDirs stringList
 	f.fs.Var(&argValues, "arg", "install argument as NAME=VALUE (repeatable)")
-	f.fs.Var(&providerDirs, "provider", "back a copy step's `from` with a directory, as NAME=DIR (repeatable)")
+	f.fs.Var(&providerDirs, "provider", "back a provider: NAME=DIR, NAME=FILE for its unnamed request, or NAME.SRC=FILE for one it is asked for by name (repeatable)")
 	events := f.fs.String("events", "pretty", "event output: pretty, ndjson, or none")
 	logPath := f.fs.String("log", "", "also write a plain-text transcript of the run to this file")
 	skipDeps := f.fs.Bool("skip-deps", false, "skip the pre-flight dependency check")
@@ -181,13 +223,9 @@ func cmdRun(argv []string) error {
 		return fmt.Errorf("%w\n\nRun \"forge args --spec %s\" to see the available arguments.", err, *f.spec)
 	}
 
-	providerRoots, err := parseKeyValues(providerDirs, "provider")
+	providers, err := parseProviders(providerDirs)
 	if err != nil {
 		return err
-	}
-	providers := make(map[string]engine.Provider, len(providerRoots))
-	for name, root := range providerRoots {
-		providers[name] = engine.DirProvider(root)
 	}
 
 	steps := spec.Steps
@@ -334,6 +372,13 @@ func cmdCheck(argv []string) error {
 		return err
 	}
 	fmt.Printf("%s: ok (%d steps, %d dependencies)\n", *f.spec, len(spec.Steps), len(spec.Dependencies))
+	// Whether a provider exists is the host's business, so this is a note
+	// rather than a problem: the spec is fine. A reference is resolved by the
+	// first step that runs and uses it, so which of these a run actually needs
+	// depends on which steps its conditions keep — the check cannot know.
+	if refs := engine.ProviderRefs(spec); len(refs) > 0 {
+		fmt.Printf("reads providers: %s — a step using one fails unless --provider names it\n", strings.Join(refs, ", "))
+	}
 	return nil
 }
 

@@ -42,7 +42,7 @@ Common flags:
 | `--platform` | host OS | Platform to build for, matched against `targetPlatforms`. Injected as `${platform}`. |
 | `--version` | see below | Version to build. Defaults to the file's `defaultVersion`, else the newest declared. Injected as `${version}`. |
 | `--arg NAME=VALUE` | — | Supply an install argument. Repeatable. |
-| `--provider NAME=DIR` | — | Back a `copy` step's `from` with a directory. Repeatable. |
+| `--provider NAME=…` | — | Back a provider — a `copy` step's `from`, or a `${NAMEPath}` reference. `NAME=DIR` serves named requests as files beneath the directory; `NAME=FILE` answers the unnamed request `${NAMEPath}`; `NAME.SRC=FILE` answers `${NAMEPath.SRC}`. Repeatable; entries for one name combine. |
 | `--events` | `pretty` | `pretty`, `ndjson`, or `none`. |
 | `--log FILE` | — | Also write a plain-text transcript of the run. |
 | `--uninstall` | off | Run `uninstallSteps` instead of `steps`. |
@@ -52,7 +52,18 @@ Common flags:
 forge check --spec .forge.json
 forge run   --spec .forge.json --dir ~/games/mygame --arg region=us
 forge run   --spec .forge.json --dir ./out --events ndjson | jq -c 'select(.kind=="step:start")'
+
+# A spec that reads ${romPath}: hand it the one file it means.
+forge run   --spec .forge.json --dir ~/games/nectar --provider "rom=/mnt/discs/Pikmin (USA) (Rev 1).iso"
+
+# A spec that reads ${romPath.Disc 1} … ${romPath.Disc 3}: map each name.
+forge run   --spec .forge.json --dir ~/games/reblue \
+            --provider "rom.Disc 1=/mnt/discs/Blue Dragon (Disc 1).iso" \
+            --provider "rom.Disc 2=/mnt/discs/Blue Dragon (Disc 2).iso" \
+            --provider "rom.Disc 3=/mnt/discs/Blue Dragon (Disc 3).iso"
 ```
+
+The key has the same shape as the reference it serves — `rom.Disc 1` for `${romPath.Disc 1}` — and is split the same way, at the first dot, so the src may contain anything. The value is a path and nothing else, which is what keeps a Windows path's own colon out of the grammar. The CLI does no matching of its own — it has no idea what a ROM is — which is why the mapping is stated on the command line: the host that would compute it is you.
 
 `pretty` progress goes to stderr, so stdout carries only the run's result — the JSON array of declared executables — and stays pipeable.
 
@@ -164,6 +175,7 @@ Any string field in a step supports `${...}` substitution. **Braces are required
 | `${version}` | The version being built. |
 | `${platform.slug}` | A variable the selected platform binds — see [Platform and version variables](#platform-and-version-variables). |
 | `${version.tag}` | A variable the selected version binds. |
+| `${romPath}`, `${romPath.Disc 2}` | The path a host-registered provider resolves — see [Providers](#providers). |
 
 A name with no matching value is left as written rather than blanked, so a typo shows up as a visibly wrong path instead of a truncated one.
 
@@ -322,7 +334,7 @@ Paths are relative to the current working directory, which starts at the run's r
 | `extract` | `src`, `dest` | Unpack `.zip`, `.7z`, `.tar.gz`/`.tgz`. Format inferred from the extension; permissions preserved. |
 | `copy` | `src`, `dest`, or `from` | Copy a file or directory recursively. With `from`, the source comes from a registered provider. |
 | `move` | `src`, `dest` | Atomic rename where possible, falling back to copy + delete across filesystems. |
-| `run` | `cmd`, `args`, `env` | Run a declared dependency. |
+| `run` | `cmd`, `args`, `env` | Run a declared dependency: a command on `PATH`, or with a path separator, a file inside the run directory. |
 | `make` | `args`, `env` | Run `make`. Predates `run` and kept for compatibility. |
 | `createDir` | `path` | `mkdir -p`. |
 | `touch` | `path` | Create an empty file, including parent directories. Leaves an existing file's contents alone. |
@@ -414,11 +426,11 @@ Forge runs specs you may not have written — a catalog of them can be synced fr
 
 **Variables must be declared.** `forge check` fails on any `${name}` a step interpolates that resolves to nothing, and on any surviving unbraced `$name`.
 
-**Commands must be declared.** `run` only executes a command named in `dependencies`. Arguments are passed to the process directly and never through a shell, so `cmd` cannot smuggle in a pipeline or a second command. `forge check` reports any `run` whose command is undeclared, before the spec ever executes.
+**Commands must be declared.** `run` only executes a command named in `dependencies`. Arguments are passed to the process directly and never through a shell, so `cmd` cannot smuggle in a pipeline or a second command. `forge check` reports any `run` whose command is undeclared, before the spec ever executes. A dependency with a path separator — `install/launcher` — is a file the steps produce rather than a command the system provides: it is not looked for on `PATH` before the run, it resolves inside the run directory when invoked, and a bare name is never looked up there, so an archive that happens to contain a file called `make` cannot shadow the real one.
 
 **Paths stay inside the run directory.** Every step path resolves under `--dir` and is rejected if it escapes, whether by an absolute path or by `..`. Archive entries are checked the same way, so a crafted archive can't write outside the destination either. Hosts that legitimately need the wider filesystem set `AllowPathEscape`.
 
-**Outside content arrives through providers.** A `copy` step naming a `from` asks the host to resolve it. The engine never guesses where a provider's content lives, and a spec cannot reach content the host hasn't offered.
+**Outside content arrives through providers.** A `copy` step naming a `from`, or a `${romPath}` reference in any field, asks the host to resolve it. The engine never guesses where a provider's content lives, and a spec cannot reach content the host hasn't offered.
 
 What is *not* bounded: the URLs a spec fetches, and what a declared command does once running. `make` runs a Makefile, and a Makefile can do anything. Declaring a dependency is a decision to trust it. Checksum pinning for `fetch` is the obvious next hardening step and is not implemented yet.
 
@@ -486,7 +498,16 @@ type Provider interface {
 }
 ```
 
-PortForge registers a `rom` provider that matches `req.Src` against a game's declared ROM dependencies and returns the matching file from the user's library. `engine.DirProvider(root)` resolves `req.Src` beneath a directory and backs the CLI's `--provider` flag.
+PortForge registers a `rom` provider that matches `req.Src` against a game's declared ROM dependencies and returns the matching file from the user's library. Two providers ship with the engine for hosts with nothing to match against: `engine.DirProvider(root)` resolves `req.Src` beneath a directory, and `engine.FixedProvider` answers from paths stated in advance — one for the unnamed request, one per name, and optionally a directory for the rest. The CLI's `--provider` flag builds a `FixedProvider` per name.
+
+A spec reaches a provider two ways. `copy` with `from` copies what the provider resolves into the run. A **provider reference** hands the path itself to a step instead: every registered provider `NAME` is readable as `${NAMEPath}`, and `${NAMEPath.<src>}` asks it for something by name — the same `req.Src` a copy step would send, spaces allowed. This is for the port that ships its own installer and wants to read a disc where it lives rather than after a 1.4 GB copy:
+
+```json
+{ "step": "run", "cmd": "install/nectar-launcher",
+  "args": ["--rom", "${romPath}", "--install-dir", "install", "--extract-only"] }
+```
+
+A reference resolves the first time a step that runs uses it — a skipped step asks for nothing — and the result is kept for the rest of the run. The spec cannot declare a provider, so `engine.UndeclaredArgs` leaves these alone; `engine.ProviderRefs(spec)` lists the providers a spec reads so a host can confirm it registers each one before running, since a reference to a missing provider fails the step that carries it, as a `copy` from one does.
 
 ### Custom steps
 
@@ -520,6 +541,44 @@ Handlers get `State`, which carries the working directory, the args, `Interp`/`R
 | `run:done` / `run:failed` | Terminal. `run:failed` carries the failing step and the error. |
 
 `log` events arrive from the goroutines draining a subprocess's pipes, so a handler must be safe to call concurrently. Every other kind is emitted from the goroutine driving the run.
+
+---
+
+## Glossary
+
+The words this README leans on, in the sense it uses them.
+
+**Spec** — a `.forge.json` file: file-level defaults plus one or more builds. It is a forge program, not a neutral description; the step vocabulary, the `${…}` references and the allowlist mean nothing without forge.
+
+**Build** — one entry in a spec's `builds` array: a step sequence that applies to a set of versions × platforms. `Select` picks one build for a run.
+
+**Host** — whatever program calls `engine.Run`: PortForge, the `forge` CLI, or anything else embedding the library. The engine knows nothing about games, ROMs or where content lives; a host supplies all of that. The CLI is a host like any other and has no privileges the library does not.
+
+**Run** — one execution of one build's step sequence against one run directory. An install is a run; a teardown is a run with `Teardown` set.
+
+**Run directory** — the directory a run is confined to (`--dir`, `Options.RootDir`). Every path a spec writes resolves beneath it and is refused if it escapes. `defineExecutable` paths are recorded relative to it.
+
+**Working directory** — where relative step paths resolve from. Starts at the run directory and moves with `cd`; always inside the run directory.
+
+**Step** — one instruction in a sequence: a builtin (`fetch`, `extract`, `run`, …) or a host-registered custom step. Steps are data; a step's fields are interpolated before it executes.
+
+**Dependency** — a command a spec declares in `dependencies`. The array is the **allowlist**: `run` executes nothing outside it, so reading it tells you everything a spec can invoke. A dependency is checked on `PATH` before the run.
+
+**Local command** — a dependency written with a path separator, `install/launcher`: a file the steps produce rather than a command the system provides. Not checked on `PATH`; resolved inside the run directory when invoked; still has to be declared.
+
+**Reference** — `${name}` in a step field, replaced before the step runs. Namespaced: `${args.x}` is an argument, `${platform}`/`${version}` the selected platform and version, `${platform.x}`/`${version.x}` a variable a build's tables bind, `${NAMEPath}` a provider reference.
+
+**Argument** — a user-configurable value the spec declares under `args` and the host supplies (`--arg`), reached as `${args.name}`.
+
+**Provider** — a function the host registers under a name that turns a request into a path on disk. It is the seam between "the spec wants *this*" and "the host knows where that is": PortForge's `rom` provider matches a requirement name against a game's declared ROM dependencies and the user's library; the CLI's answers from paths given on the command line. A spec reaches a provider by `copy from:NAME` (copy the content in) or by a **provider reference**, `${NAMEPath}` / `${NAMEPath.src}` (hand over the path). A spec cannot declare a provider, only read one; `ProviderRefs` tells a host which.
+
+**Src** — the string a spec sends a provider: `copy`'s `src`, or what follows the dot in `${NAMEPath.src}`. Its meaning is the provider's to define — a requirement name for PortForge, a filename for `DirProvider`. Empty means "whatever you have for me", for providers that can answer that.
+
+**Platform** — a name from `targetPlatforms`, matched against what the host is building for. Architecture is part of the name where it matters (`Linux-x64`, `Mac-arm64`).
+
+**User data paths** — `userDataPaths`: paths inside the run directory that belong to the program's user rather than to the build — saves, configuration. `deletePath` spares them, and an install moves them out of the tree and back so a build cannot write over them.
+
+**Teardown** — a run of `uninstallSteps`. Spared the user-data set-aside, since an uninstall that put the saves back would leave an install directory holding nothing but them.
 
 ---
 

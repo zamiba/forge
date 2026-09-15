@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.0.7-alpha - 2026-09-15
+
+### Added
+
+- **`run` can execute a file inside the run directory.** A dependency
+  containing a path separator — `install/nectar-launcher` — names a file the
+  steps produce rather than a command the system provides. It is skipped by the
+  pre-flight `PATH` check, resolved like any other step path when invoked, and
+  confined to the run directory the same way. The allowlist rule is unchanged:
+  the path must be declared, and reading `dependencies` still tells you
+  everything a spec can execute. A bare name is never looked up in the run
+  directory, so nothing an archive contains can shadow a declared command. This
+  is for the growing number of ports that ship their own installer: Open
+  Nectar's extracts a game's assets from the disc and wants running at install
+  time, not on first launch behind a file dialog.
+
+- **Provider references.** Every registered provider `NAME` is readable as
+  `${NAMEPath}`, and `${NAMEPath.<src>}` asks it for something by name — the
+  same lookup a `copy` step's `src` makes, spaces allowed after the dot. Where
+  `copy from:"rom"` brings the disc into the run, `"--rom", "${romPath}"` hands
+  its path to a step that can read it where it lives, which for a 1.4 GB disc
+  image that is read once and never modified is the difference between an
+  install and a copy. A reference resolves the first time a step that runs
+  uses it; a skipped step asks for nothing. `engine.UndeclaredArgs` leaves these
+  to the host, and the new `engine.ProviderRefs` lists the providers a spec
+  reads so a host can confirm it registers each one; `forge check` prints them.
+
+- **`--provider` states a mapping, and `engine.FixedProvider` backs it.**
+  `NAME=DIR` is unchanged; `NAME=FILE` answers the unnamed `${NAMEPath}`, and
+  `NAME.SRC=FILE` answers `${NAMEPath.SRC}` — the key shaped like the
+  reference, the value a bare path — repeatable, combining per name.
+  Until now the CLI could not run a spec written against a provider with real
+  content knowledge: `DirProvider` needs a src, and the empty src that
+  PortForge reads as "any dump this port accepts" was an error. The CLI still
+  knows nothing about ROMs; the operator states what the host would compute.
+
+- **A glossary** at the end of the README, for the words it leans on: host,
+  provider, src, run directory, local command, reference, teardown.
+
+All of it is additive. A spec written for v0.0.6 means exactly what it meant: no
+dependency in the catalog contains a separator, no step uses a `${…Path}` name,
+and `${…}` with a space after the dot was left verbatim before and still is
+unless a provider claims it.
+
 ## v0.0.6-alpha - 2026-09-12
 
 ### Added

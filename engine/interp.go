@@ -8,8 +8,33 @@ import (
 
 // argRe matches an interpolated reference. Braces are required: a name may be
 // namespaced with a dot, and without braces there is no way to tell where
-// ${platform.slug}.zip ends and the literal text begins.
-var argRe = regexp.MustCompile(`\$\{([\w.]+)\}`)
+// ${platform.slug}.zip ends and the literal text begins. The head is an
+// identifier; what follows the first dot may carry spaces, because a provider
+// reference names a host-side thing there — "Disc 2" — that the host, not the
+// spec, chose the name of.
+var argRe = regexp.MustCompile(`\$\{(\w+(?:\.[^{}$]+)?)\}`)
+
+// providerSuffix is what turns a provider's name into the variable that carries
+// its path: the "rom" provider is read as ${romPath}, or ${romPath.Disc 2} to
+// ask it for something by name. The suffix says what the value is — a path on
+// disk, which is all a provider ever returns — and keeps the names apart from
+// the args, platform and version namespaces without adding a fourth.
+const providerSuffix = "Path"
+
+// providerRef splits a reference into the provider it addresses and the src it
+// asks for. ${romPath} is provider "rom" with an empty src; ${romPath.Disc 2}
+// is provider "rom", src "Disc 2". Namespaced references — ${args.x},
+// ${platform.slug} — and names that are not a provider's are not references.
+func providerRef(name string) (provider, src string, ok bool) {
+	head, rest, hasDot := strings.Cut(name, ".")
+	if !strings.HasSuffix(head, providerSuffix) || len(head) == len(providerSuffix) {
+		return "", "", false
+	}
+	if hasDot && rest == "" {
+		return "", "", false
+	}
+	return strings.TrimSuffix(head, providerSuffix), rest, true
+}
 
 // bareArgRe matches the unbraced form that older specs used. Interpolate no
 // longer substitutes it — UndeclaredArgs reports it instead, so a spec written

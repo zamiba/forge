@@ -14,11 +14,27 @@ import (
 // every subprocess the run starts.
 const msys2Dep = "msys2"
 
+// IsLocalCommand reports whether a dependency names a file inside the run
+// directory rather than a command on PATH. The distinction is the presence of a
+// path separator: "install/launcher" is a file the steps produce, "chmod" is a
+// command the system provides. A bare name is never looked up in the run
+// directory, so an archive that happens to contain a file called "make" cannot
+// shadow the real one for a spec that declared it.
+func IsLocalCommand(name string) bool {
+	return strings.ContainsAny(name, `/\`)
+}
+
 // CheckDependencies verifies that every declared dependency is present, and
-// returns a single error naming all the missing ones.
+// returns a single error naming all the missing ones. Local commands are not
+// checked: they do not exist until the steps that produce them have run, and
+// the run step resolves them — and fails if they are missing — at the moment
+// they are invoked.
 func CheckDependencies(deps []string) error {
 	var missing []string
 	for _, dep := range deps {
+		if IsLocalCommand(dep) {
+			continue
+		}
 		if dep == msys2Dep {
 			if runtime.GOOS == "windows" && FindMSYS2() == "" {
 				missing = append(missing, "msys2 (install from https://www.msys2.org)")

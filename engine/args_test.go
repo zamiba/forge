@@ -117,3 +117,28 @@ func TestUndeclaredArgsHandlesNil(t *testing.T) {
 		t.Errorf("UndeclaredArgs(nil) = %v, want nil", got)
 	}
 }
+
+// A provider reference is the host's to satisfy, so the spec-only check leaves it
+// alone and ProviderRefs hands the host the list to verify instead.
+func TestUndeclaredArgsLeavesProviderReferencesToTheHost(t *testing.T) {
+	spec := specFromJSON(t, `{
+	  "dependencies": ["install/launcher"],
+	  "builds": [{
+	    "versions": ["1.0"],
+	    "steps": [
+	      {"step": "run", "cmd": "install/launcher", "args": ["--rom", "${romPath}", "--disc2", "${romPath.Disc 2}"]},
+	      {"step": "copy", "src": "${depotPath.textures}", "dest": "install/${args.missing}"}
+	    ]
+	  }]
+	}`)
+
+	if got, want := UndeclaredArgs(spec), []string{"args.missing"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("UndeclaredArgs = %v, want %v", got, want)
+	}
+	if got, want := ProviderRefs(spec), []string{"depot", "rom"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ProviderRefs = %v, want %v", got, want)
+	}
+	if got := ProviderRefs(nil); got != nil {
+		t.Errorf("ProviderRefs(nil) = %v", got)
+	}
+}

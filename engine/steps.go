@@ -140,6 +140,12 @@ func stepMake(ctx context.Context, st *State, step Step) error {
 // dependencies array — that array is the allowlist, so reading it tells you
 // every command a spec is able to invoke. Arguments are passed to the process
 // directly and are never interpreted by a shell.
+//
+// A command containing a path separator is a local command: a file inside the
+// run directory, typically one an earlier step downloaded, such as a port's own
+// installer. It resolves like any other step path — relative to the working
+// directory and confined to the run directory — so "../tool" and an absolute
+// path are refused here for the same reason they are refused in a copy.
 func stepRun(ctx context.Context, st *State, step Step) error {
 	cmd := st.Interp(step.Cmd)
 	if cmd == "" {
@@ -155,6 +161,16 @@ func stepRun(ctx context.Context, st *State, step Step) error {
 			return fmt.Errorf("run %q: the spec declares no dependencies; add %q to its dependencies array to allow it", cmd, cmd)
 		}
 		return fmt.Errorf("run %q: not declared in dependencies (declared: %s)", cmd, strings.Join(declared, ", "))
+	}
+	if IsLocalCommand(cmd) {
+		full, err := st.Resolve(cmd)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(full); err != nil {
+			return fmt.Errorf("run %q: %w", cmd, err)
+		}
+		cmd = full
 	}
 	return runProcess(ctx, st, cmd, step)
 }

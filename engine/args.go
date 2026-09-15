@@ -49,12 +49,38 @@ func UndeclaredArgs(spec *Spec) []string {
 
 	var out []string
 	for name := range used {
+		// A provider reference is declared by the host, not the spec, so a
+		// spec-only check cannot know whether ${romPath} resolves. ProviderRefs
+		// names them for a host that can.
+		if _, _, isProvider := providerRef(name); isProvider {
+			continue
+		}
 		if !declared[name] {
 			out = append(out, name)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ProviderRefs returns the names of the providers a spec reads through
+// ${<name>Path} references, sorted and deduplicated. The spec cannot declare
+// these; the host registers them, and this is how it checks before a run that it
+// has registered every one the spec will ask for. A reference to one it has not
+// fails the step that carries it, which is late for the same reason an
+// undeclared argument is.
+func ProviderRefs(spec *Spec) []string {
+	if spec == nil {
+		return nil
+	}
+	used, _ := collectSpecRefs(spec)
+	names := map[string]bool{}
+	for ref := range used {
+		if provider, _, ok := providerRef(ref); ok {
+			names[provider] = true
+		}
+	}
+	return sortedKeys(names)
 }
 
 // collectRefs gathers every $name a step interpolates. It reads the step's
