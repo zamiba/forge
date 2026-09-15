@@ -339,9 +339,15 @@ Paths are relative to the current working directory, which starts at the run's r
 | `createDir` | `path` | `mkdir -p`. |
 | `touch` | `path` | Create an empty file, including parent directories. Leaves an existing file's contents alone. |
 | `deletePath` | `path` | `rm -rf`, minus anything listed in `userDataPaths`. Succeeds when the path is already absent. |
-| `defineExecutable` | `executable`, `title` | Record a launch target. Applies `chmod +x` on non-Windows. Moves no files. |
+| `defineExecutable` | `executable`, `title`, `args` | Record a launch target. Applies `chmod +x` on non-Windows. Moves no files. |
 
 Multiple `defineExecutable` steps are allowed; hosts typically treat the first as the default.
+
+`args` are the arguments the host starts the executable with. They are interpolated when the step runs, except for provider references, which stay in the recorded executable verbatim and are resolved by the host at launch — where a ROM is when the game starts is what matters, not where it was at install time, and a ROM added after the install should work without reinstalling. A port that takes its disc on the command line boots straight in:
+
+```json
+{ "step": "defineExecutable", "executable": "install/melee", "title": "Play", "args": ["${romPath}"] }
+```
 
 ### User data
 
@@ -507,7 +513,7 @@ A spec reaches a provider two ways. `copy` with `from` copies what the provider 
   "args": ["--rom", "${romPath}", "--install-dir", "install", "--extract-only"] }
 ```
 
-A reference resolves the first time a step that runs uses it — a skipped step asks for nothing — and the result is kept for the rest of the run. The spec cannot declare a provider, so `engine.UndeclaredArgs` leaves these alone; `engine.ProviderRefs(spec)` lists the providers a spec reads so a host can confirm it registers each one before running, since a reference to a missing provider fails the step that carries it, as a `copy` from one does.
+A reference resolves the first time a step that runs uses it — a skipped step asks for nothing — and the result is kept for the rest of the run. The exception is a `defineExecutable` step's `args`: the run leaves those references in the recorded `Executable`, and the host resolves them with `Executable.LaunchArgs(ctx, providers)` each time it launches, against the same map it gave `Options.Providers`. The spec cannot declare a provider, so `engine.UndeclaredArgs` leaves these alone; `engine.ProviderRefs(spec)` lists the providers a spec reads so a host can confirm it registers each one before running, since a reference to a missing provider fails the step that carries it, as a `copy` from one does.
 
 ### Custom steps
 
@@ -569,6 +575,8 @@ The words this README leans on, in the sense it uses them.
 **Reference** — `${name}` in a step field, replaced before the step runs. Namespaced: `${args.x}` is an argument, `${platform}`/`${version}` the selected platform and version, `${platform.x}`/`${version.x}` a variable a build's tables bind, `${NAMEPath}` a provider reference.
 
 **Argument** — a user-configurable value the spec declares under `args` and the host supplies (`--arg`), reached as `${args.name}`.
+
+**Executable** — a launch target a `defineExecutable` step records: a path relative to the run directory, a title, and the arguments to start it with. A run reports them in its result; what a host does with them is its own affair.
 
 **Provider** — a function the host registers under a name that turns a request into a path on disk. It is the seam between "the spec wants *this*" and "the host knows where that is": PortForge's `rom` provider matches a requirement name against a game's declared ROM dependencies and the user's library; the CLI's answers from paths given on the command line. A spec reaches a provider by `copy from:NAME` (copy the content in) or by a **provider reference**, `${NAMEPath}` / `${NAMEPath.src}` (hand over the path). A spec cannot declare a provider, only read one; `ProviderRefs` tells a host which.
 

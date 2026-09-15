@@ -376,8 +376,11 @@ func cmdCheck(argv []string) error {
 	// rather than a problem: the spec is fine. A reference is resolved by the
 	// first step that runs and uses it, so which of these a run actually needs
 	// depends on which steps its conditions keep — the check cannot know.
+	// A reference in an executable's args is the host's to resolve at launch
+	// and never fails a run, so a spec whose only reference is there runs
+	// without --provider at all.
 	if refs := engine.ProviderRefs(spec); len(refs) > 0 {
-		fmt.Printf("reads providers: %s — a step using one fails unless --provider names it\n", strings.Join(refs, ", "))
+		fmt.Printf("reads providers: %s — a step using one fails unless --provider names it; launch arguments are resolved by the host, not the run\n", strings.Join(refs, ", "))
 	}
 	return nil
 }

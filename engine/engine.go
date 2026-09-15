@@ -270,27 +270,70 @@ func (st *State) resolveProvider(ctx context.Context, step Step) (string, error)
 // a provider returns does not move during a run. A reference to a provider the
 // host never registered fails the step, as a copy from one does.
 func (st *State) bindProviderRefs(ctx context.Context, step Step) error {
+	if step.Step == "defineExecutable" {
+		// Launch arguments are the one place a provider reference is not
+		// resolved by the run: the host resolves them at launch (see
+		// Executable.LaunchArgs). Dropping Raw makes collectRefs read the
+		// typed fields, which for this step are the executable and the title.
+		step.Args, step.Raw = nil, nil
+	}
 	refs := map[string]bool{}
 	collectRefs(step, refs, map[string]bool{})
+	return resolveProviderRefs(ctx, refs, st.Args, st.providers, step)
+}
+
+// resolveProviderRefs resolves every provider reference in refs that args does
+// not already carry, storing each path in args under the reference's name.
+// Names that are not provider references are left to Interpolate.
+func resolveProviderRefs(ctx context.Context, refs map[string]bool, args map[string]string, providers map[string]Provider, step Step) error {
 	for name := range refs {
-		if _, bound := st.Args[name]; bound {
+		if _, bound := args[name]; bound {
 			continue
 		}
 		provider, src, ok := providerRef(name)
 		if !ok {
 			continue
 		}
-		p, registered := st.providers[provider]
+		p, registered := providers[provider]
 		if !registered {
 			return fmt.Errorf("${%s}: no provider registered for %q", name, provider)
 		}
-		path, err := p.Resolve(ctx, ProviderRequest{From: provider, Src: src, Args: st.Args, Step: step})
+		path, err := p.Resolve(ctx, ProviderRequest{From: provider, Src: src, Args: args, Step: step})
 		if err != nil {
 			return fmt.Errorf("${%s}: %w", name, err)
 		}
-		st.Args[name] = path
+		args[name] = path
 	}
 	return nil
+}
+
+// LaunchArgs returns the arguments to start the executable with, resolving the
+// provider references its args still carry against providers — the same map a
+// host hands Options.Providers. Every reference is resolved afresh, so a ROM
+// that has moved since the install is found where it is now, and one added
+// after the install is found at all. The request's Step is the zero Step: no
+// step is running at launch.
+//
+// A reference to a provider the host has not registered, or one the provider
+// cannot answer, is an error; a reference that is not a provider's is left in
+// the text, as Interpolate leaves any name it has no value for.
+func (e Executable) LaunchArgs(ctx context.Context, providers map[string]Provider) ([]string, error) {
+	if len(e.Args) == 0 {
+		return nil, nil
+	}
+	refs := map[string]bool{}
+	for _, a := range e.Args {
+		refsIn(a, refs, map[string]bool{})
+	}
+	bound := map[string]string{}
+	if err := resolveProviderRefs(ctx, refs, bound, providers, Step{}); err != nil {
+		return nil, err
+	}
+	out := make([]string, len(e.Args))
+	for i, a := range e.Args {
+		out[i] = Interpolate(a, bound)
+	}
+	return out, nil
 }
 
 // Run executes a step sequence and returns the executables it declared.

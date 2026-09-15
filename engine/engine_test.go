@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -798,5 +799,115 @@ func TestFixedProviderAnswersFromStatedPaths(t *testing.T) {
 	gone := FixedProvider{Default: filepath.Join(dir, "missing.iso")}
 	if _, err := gone.Resolve(context.Background(), ProviderRequest{From: "rom"}); err == nil {
 		t.Error("a missing default should be an error")
+	}
+}
+
+// A launch argument is not resolved by the run: the ROM it names may not be
+// there yet, and where it is at launch is what matters. Everything that is a
+// fact about the install — args, platform, version — is baked in.
+func TestExecutableArgsDeferProviderReferencesToLaunch(t *testing.T) {
+	asked := false
+	res, err := run(t, Options{
+		Platform: "Linux",
+		Args:     map[string]string{"region": "us"},
+		Steps: []Step{
+			{Step: "touch", Path: "install/melee"},
+			{Step: "defineExecutable", Executable: "install/melee", Title: "Play",
+				Args: []string{"--region", "${args.region}", "--platform", "${platform}", "${romPath}", "${romPath.Disc 2}"}},
+		},
+		Providers: map[string]Provider{
+			"rom": ProviderFunc(func(context.Context, ProviderRequest) (string, error) {
+				asked = true
+				return "", errors.New("no ROM at install time")
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked {
+		t.Error("the run asked the provider for a launch argument")
+	}
+	want := []string{"--region", "us", "--platform", "Linux", "${romPath}", "${romPath.Disc 2}"}
+	if got := res.Executables[0].Args; !reflect.DeepEqual(got, want) {
+		t.Errorf("recorded args %q, want %q", got, want)
+	}
+}
+
+// The same run resolved ${romPath} for a run step before defineExecutable
+// came around. The cached path must not leak into the launch arguments, or
+// the install bakes in wherever the disc happened to be that day.
+func TestExecutableArgsIgnoreAPathAnEarlierStepResolved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, Options{
+		RootDir:      root,
+		Dependencies: []string{"./tool"},
+		Steps: []Step{
+			{Step: "run", Cmd: "./tool", Args: []string{"${romPath}"}},
+			{Step: "defineExecutable", Executable: "tool", Args: []string{"${romPath}"}},
+		},
+		Providers: map[string]Provider{
+			"rom": ProviderFunc(func(context.Context, ProviderRequest) (string, error) {
+				return "/discs/today.iso", nil
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Executables[0].Args; !reflect.DeepEqual(got, []string{"${romPath}"}) {
+		t.Errorf("recorded args %q, want the reference left for launch", got)
+	}
+}
+
+func TestLaunchArgsResolveProviderReferences(t *testing.T) {
+	exe := Executable{Path: "install/melee", Args: []string{"--dvd", "${romPath}", "${romPath.Disc 2}", "--seed", "${args.seed}", "7"}}
+	var srcs []string
+	got, err := exe.LaunchArgs(context.Background(), map[string]Provider{
+		"rom": ProviderFunc(func(_ context.Context, req ProviderRequest) (string, error) {
+			srcs = append(srcs, req.Src)
+			return "/discs/" + req.Src + "melee.iso", nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An unknown non-provider name is left alone, as Interpolate does.
+	want := []string{"--dvd", "/discs/melee.iso", "/discs/Disc 2melee.iso", "--seed", "${args.seed}", "7"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	sort.Strings(srcs)
+	if !reflect.DeepEqual(srcs, []string{"", "Disc 2"}) {
+		t.Errorf("provider asked for %q", srcs)
+	}
+
+	// Nothing to resolve: no provider is needed, and none is consulted.
+	if got, err := (Executable{Path: "x", Args: []string{"--windowed"}}).LaunchArgs(context.Background(), nil); err != nil || !reflect.DeepEqual(got, []string{"--windowed"}) {
+		t.Errorf("plain args: %q, %v", got, err)
+	}
+	if got, err := (Executable{Path: "x"}).LaunchArgs(context.Background(), nil); err != nil || got != nil {
+		t.Errorf("no args: %q, %v", got, err)
+	}
+}
+
+func TestLaunchArgsFailWhenTheProviderCannot(t *testing.T) {
+	exe := Executable{Path: "x", Args: []string{"${romPath}"}}
+	_, err := exe.LaunchArgs(context.Background(), map[string]Provider{
+		"rom": ProviderFunc(func(context.Context, ProviderRequest) (string, error) {
+			return "", errors.New("no dump in the library")
+		}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "${romPath}: no dump in the library") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := exe.LaunchArgs(context.Background(), nil); err == nil || !strings.Contains(err.Error(), `no provider registered for "rom"`) {
+		t.Errorf("unregistered: err = %v", err)
 	}
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Launch arguments.** `defineExecutable` takes an `args` array, carried in
+  the recorded `Executable`. Install-time references — `${args.x}`,
+  `${platform}`, `${version}` and the variables they bind — are interpolated
+  when the step runs; a provider reference is not. It stays in the executable
+  verbatim and `Executable.LaunchArgs(ctx, providers)` resolves it at launch,
+  every launch, so a ROM that has moved since the install is found where it
+  is now and one added afterwards is found at all. A run never asks a provider
+  for a launch argument, so an install does not need the ROM to be present,
+  and a path an earlier step resolved is not baked in. For the port that
+  takes its disc on the command line and otherwise shows a chooser:
+  `"args": ["${romPath}"]`. Additive: a spec without `args` records what it
+  always did, and a host that ignores `Executable.Args` sees no change.
+
 ## v0.0.7-alpha - 2026-09-15
 
 ### Added

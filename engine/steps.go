@@ -249,6 +249,24 @@ func stepDefineExecutable(_ context.Context, st *State, step Step) error {
 	if title == "" {
 		title = filepath.Base(exePath)
 	}
-	st.AddExecutable(Executable{Path: exePath, Title: title})
+	// Launch arguments are interpolated against the install-time bindings only.
+	// A provider reference stays literal, even one an earlier step already
+	// resolved and cached in st.Args, because the path it names is a fact
+	// about the machine at launch — a ROM in a storage unit that has since
+	// been moved, or added after the install — not about this run.
+	var args []string
+	if len(step.Args) > 0 {
+		installArgs := make(map[string]string, len(st.Args))
+		for k, v := range st.Args {
+			if _, _, isProvider := providerRef(k); !isProvider {
+				installArgs[k] = v
+			}
+		}
+		args = make([]string, len(step.Args))
+		for i, a := range step.Args {
+			args[i] = Interpolate(a, installArgs)
+		}
+	}
+	st.AddExecutable(Executable{Path: exePath, Title: title, Args: args})
 	return nil
 }

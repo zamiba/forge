@@ -127,9 +127,16 @@ func (s Step) DecodeRaw(v any) error {
 
 // Executable is a launch target declared by a defineExecutable step. Path is
 // relative to the run's root directory.
+//
+// Args are the arguments to launch it with. Install-time references — args,
+// platform, version — were interpolated when the step ran, but a provider
+// reference such as ${romPath} is still in there verbatim: what it names can
+// move between an install and a launch, so it is resolved by the host at the
+// moment of launch, with LaunchArgs.
 type Executable struct {
-	Path  string `json:"path"`
-	Title string `json:"title"`
+	Path  string   `json:"path"`
+	Title string   `json:"title"`
+	Args  []string `json:"args,omitempty"`
 }
 
 // SpecFile is a parsed spec file: the builds it declares plus the file-level
