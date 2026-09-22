@@ -145,7 +145,7 @@ File-level only:
 | --- | --- | --- |
 | `defaultVersion` | string | The version a host should offer first. Must be one a build declares. |
 | `uninstallSteps` | object[] | Optional teardown sequence, shared by every build. |
-| `userDataPaths` | string[] | Paths a `deletePath` must leave behind — see [User data](#user-data). |
+| `userDataPaths` | (string \| object)[] | The program's user's data: paths in the tree a `deletePath` must leave behind, or places outside it for the host — see [User data](#user-data). |
 | `builds` | object[] | The builds themselves. Required in the object form. |
 
 ### Versions
@@ -403,6 +403,52 @@ Points worth knowing:
 - `${name}` interpolation applies, and `forge check` reports an undeclared reference
   in a user data path just as it does in a step.
 
+A program that writes the user's data *outside* the tree — its own folder under
+`~/.local/share` or `%APPDATA%`, say — names that place as an object in the same list:
+a **location type**, which says which of the per-user folders an operating system gives
+programs, and a path beneath it.
+
+```json
+"userDataPaths": [
+  "install/saves",
+  { "locationType": "linuxData", "path": "melee-pc" },
+  { "locationType": "windowsRoaming", "path": "melee-pc" }
+]
+```
+
+The engine parses the object form and carries it in `Spec.UserData`; it acts on none
+of it during a run, because nothing outside the tree is a build's business, and
+`Spec.UserDataPaths` holds only the string entries. What to do at the place — link it
+into a profile, back it up — is the host's; `UserDataPath.Location()` resolves it for
+the host on the machine it runs on, and returns `ErrOtherPlatform` for an entry whose
+type belongs to another operating system, which is how a host skips the entries that
+are not for it.
+
+The location types name the folder the way its platform's programs do, so an author
+writes what a port's own documentation says rather than translating it. Each is for
+one platform; a program that writes to a different folder on each platform declares
+one entry per platform, as above.
+
+| locationType | Resolves to |
+|---|---|
+| `linuxConfig` | `$XDG_CONFIG_HOME`, else `~/.config` |
+| `linuxData` | `$XDG_DATA_HOME`, else `~/.local/share` |
+| `windowsRoaming` | `%APPDATA%` (`…\AppData\Roaming`) |
+| `windowsLocal` | `%LOCALAPPDATA%` (`…\AppData\Local`) |
+| `windowsDocuments` | the Documents known folder, wherever it is redirected to |
+| `windowsSavedGames` | the Saved Games known folder |
+| `macosApplicationSupport` | `~/Library/Application Support` |
+
+Where a program writes on Linux depends on its toolkit: SDL's `SDL_GetPrefPath` gives
+`~/.local/share/<name>`, so a port built on SDL is `linuxData`; one that writes to
+`~/.config/<name>` is `linuxConfig`. Windows programs mostly use `%APPDATA%`, with
+`%LOCALAPPDATA%` for the ones that keep their data off roaming profiles, and games of
+the GOG era often write to Documents or Saved Games instead.
+
+An entry is literal (no `${name}`), needs both `locationType` and `path`, and its path
+must stay beneath the folder — the folder itself, an absolute path or `..` are rejected
+at parse time, so `forge check` reports them, as it does a misspelt type.
+
 An install is protected differently from a removal, and the engine handles both.
 
 A **removal** is covered by `deletePath` sparing the listed paths, above. An
@@ -584,7 +630,7 @@ The words this README leans on, in the sense it uses them.
 
 **Platform** — a name from `targetPlatforms`, matched against what the host is building for. Architecture is part of the name where it matters (`Linux-x64`, `Mac-arm64`).
 
-**User data paths** — `userDataPaths`: paths inside the run directory that belong to the program's user rather than to the build — saves, configuration. `deletePath` spares them, and an install moves them out of the tree and back so a build cannot write over them.
+**User data paths** — `userDataPaths`: paths that belong to the program's user rather than to the build — saves, configuration. Inside the run directory, `deletePath` spares them and an install moves them out of the tree and back so a build cannot write over them. Outside it, an entry names a location type — a platform's per-user folder — and a path beneath it, and the host does what it does there; the engine resolves it and otherwise only carries it.
 
 **Teardown** — a run of `uninstallSteps`. Spared the user-data set-aside, since an uninstall that put the saves back would leave an install directory holding nothing but them.
 

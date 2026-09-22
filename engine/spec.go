@@ -36,8 +36,13 @@ type Spec struct {
 	// wholesale. They resolve against RootDir, not the working directory,
 	// because they describe the item rather than any one step's position in it.
 	// Declared for the file and copied into every build; a build cannot declare
-	// its own — see Spec.UnmarshalJSON.
+	// its own — see Spec.UnmarshalJSON. These are the file's in-tree entries
+	// only; UserData has every entry, including those outside the tree.
 	UserDataPaths []string `json:"-"`
+	// UserData is the file's whole userDataPaths declaration, the entries
+	// outside the tree included. The engine acts on none of those — nothing
+	// outside the tree is a build's business — and carries them for the host.
+	UserData []UserDataPath `json:"-"`
 	// UninstallSteps is the file's teardown sequence, copied into every build.
 	// A build cannot declare its own — see Spec.UnmarshalJSON.
 	UninstallSteps []Step `json:"-"`
@@ -159,7 +164,7 @@ type specFileHeader struct {
 	Dependencies   *[]string           `json:"dependencies"`
 	Args           *map[string]ArgSpec `json:"args"`
 	BuildPaths     *[]string           `json:"buildPaths"`
-	UserDataPaths  *[]string           `json:"userDataPaths"`
+	UserDataPaths  *[]UserDataPath     `json:"userDataPaths"`
 	UninstallSteps *[]Step             `json:"uninstallSteps"`
 	Builds         []Spec              `json:"builds"`
 }
@@ -201,9 +206,15 @@ func ParseSpecFile(data []byte) (*SpecFile, error) {
 		if b.BuildPaths == nil && h.BuildPaths != nil {
 			b.BuildPaths = *h.BuildPaths
 		}
-		// File-level only, so there is no build value to preserve.
+		// File-level only, so there is no build value to preserve. The engine
+		// protects the in-tree entries; the ones outside are the host's.
 		if h.UserDataPaths != nil {
-			b.UserDataPaths = *h.UserDataPaths
+			b.UserData = *h.UserDataPaths
+			for _, u := range b.UserData {
+				if !u.Outside() {
+					b.UserDataPaths = append(b.UserDataPaths, u.Path)
+				}
+			}
 		}
 		// File-level only, so there is no build value to preserve.
 		if h.UninstallSteps != nil {

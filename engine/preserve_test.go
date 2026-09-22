@@ -2,8 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -528,5 +531,92 @@ func TestBuildOptionsCarriesEverySpecDerivedField(t *testing.T) {
 		if !ok {
 			t.Errorf("BuildOptions did not carry %s", name)
 		}
+	}
+}
+
+// An entry of userDataPaths is a string for a path inside the tree, or an
+// object naming a location outside it. The engine protects the former and
+// only carries the latter, for the host.
+func TestUserDataPathsTakeEntriesOutsideTheTree(t *testing.T) {
+	sf, err := ParseSpecFile([]byte(`{
+	  "userDataPaths": [
+	    "install/saves",
+	    { "locationType": "linuxData", "path": "melee-pc" },
+	    { "locationType": "windowsRoaming", "path": "melee-pc" },
+	    "install/game.config"
+	  ],
+	  "builds": [{ "versions": ["1.0"], "steps": [] }]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := sf.Specs[0]
+	if got := strings.Join(spec.UserDataPaths, ","); got != "install/saves,install/game.config" {
+		t.Errorf("in-tree paths = %q", got)
+	}
+	if len(spec.UserData) != 4 || !spec.UserData[1].Outside() || spec.UserData[1].LocationType != "linuxData" || spec.UserData[1].Path != "melee-pc" {
+		t.Errorf("UserData = %+v", spec.UserData)
+	}
+	if spec.UserData[0].Outside() || spec.UserData[0].Path != "install/saves" {
+		t.Errorf("a string entry is an in-tree path: %+v", spec.UserData[0])
+	}
+	// The build's protection is unchanged by the entries outside the tree.
+	opts := spec.BuildOptions("Linux", "1.0", nil, nil)
+	if got := strings.Join(opts.PreservePaths, ","); got != "install/saves,install/game.config" {
+		t.Errorf("PreservePaths = %q", got)
+	}
+	// And the declaration round-trips in the form it was written.
+	out, err := json.Marshal(spec.UserData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `["install/saves",{"locationType":"linuxData","path":"melee-pc"},{"locationType":"windowsRoaming","path":"melee-pc"},"install/game.config"]`; string(out) != want {
+		t.Errorf("marshal = %s", out)
+	}
+}
+
+func TestUserDataPathsRejectMalformedEntriesOutsideTheTree(t *testing.T) {
+	for name, entry := range map[string]string{
+		"no location type": `{ "path": "saves" }`,
+		"unknown type":     `{ "locationType": "linuxLocal", "path": "saves" }`,
+		"no path":          `{ "locationType": "linuxData" }`,
+		"interpolation":    `{ "locationType": "linuxData", "path": "${args.name}" }`,
+		"absolute":         `{ "locationType": "linuxData", "path": "/etc" }`,
+		"escapes":          `{ "locationType": "linuxData", "path": "../.ssh" }`,
+		"the folder":       `{ "locationType": "linuxData", "path": "." }`,
+		"not a path":       `42`,
+	} {
+		_, err := ParseSpecFile([]byte(`{ "userDataPaths": [` + entry + `], "builds": [{ "versions": ["1.0"], "steps": [] }] }`))
+		if err == nil {
+			t.Errorf("%s: %s should be rejected", name, entry)
+		}
+	}
+}
+
+// A location resolves on the platform it belongs to and says so on any
+// other, so a host skips the entries that are not for this machine.
+func TestUserDataPathLocationFollowsThePlatform(t *testing.T) {
+	linux := UserDataPath{LocationType: "linuxData", Path: "melee-pc"}
+	windows := UserDataPath{LocationType: "windowsRoaming", Path: "melee-pc"}
+	switch runtime.GOOS {
+	case "linux":
+		t.Setenv("XDG_DATA_HOME", "/tmp/xdg")
+		if got, err := linux.Location(); err != nil || got != "/tmp/xdg/melee-pc" {
+			t.Errorf("linuxData = %q, %v", got, err)
+		}
+		if _, err := windows.Location(); !errors.Is(err, ErrOtherPlatform) {
+			t.Errorf("windowsRoaming on linux: %v", err)
+		}
+	case "windows":
+		t.Setenv("APPDATA", `C:\Users\x\AppData\Roaming`)
+		if got, err := windows.Location(); err != nil || got != `C:\Users\x\AppData\Roaming\melee-pc` {
+			t.Errorf("windowsRoaming = %q, %v", got, err)
+		}
+		if _, err := linux.Location(); !errors.Is(err, ErrOtherPlatform) {
+			t.Errorf("linuxData on windows: %v", err)
+		}
+	}
+	if got := strings.Join(LocationTypes(), " "); !strings.Contains(got, "linuxData") || !strings.Contains(got, "windowsSavedGames") {
+		t.Errorf("LocationTypes = %q", got)
 	}
 }

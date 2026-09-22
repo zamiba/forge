@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.0.9-alpha - 2026-09-22
+
+### Added
+
+- **`userDataPaths` takes entries outside the tree.** An entry is still a
+  string for a path inside the tree, and may now be an object —
+  `{ "locationType": "linuxData", "path": "melee-pc" }` — for the user's data
+  a program keeps in one of the per-user folders its platform gives it. The
+  location types name those folders the way the platform's programs do
+  (`linuxConfig`, `linuxData`, `windowsRoaming`, `windowsLocal`,
+  `windowsDocuments`, `windowsSavedGames`, `macosApplicationSupport`), each
+  for one platform, so a program that writes somewhere different on each
+  declares one entry per platform. The engine parses the object form into
+  `Spec.UserData`, resolves it on request (`UserDataPath.Location`, which
+  says `ErrOtherPlatform` for another platform's entry) and does nothing with
+  it during a run, since nothing outside the tree is a build's business;
+  `Spec.UserDataPaths` and every protection built on it — `deletePath`
+  sparing, the install set-aside — see only the string entries, exactly as
+  before. An entry is literal, not interpolated, and is rejected without a
+  type or a path, with a type the engine does not know, or with a path that
+  does not stay beneath the folder. One list for both, rather than a second
+  field, so an author declares the user's data in one place whichever side of
+  the tree it is on.
+
 ## v0.0.8-alpha - 2026-09-16
 
 ### Added

@@ -1,8 +1,11 @@
 module github.com/zamiba/forge
 
-go 1.25.0
+go 1.26.0
 
-require github.com/bodgit/sevenzip v1.6.4
+require (
+	github.com/bodgit/sevenzip v1.6.4
+	golang.org/x/sys v0.48.0
+)
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
