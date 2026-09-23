@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.0.10-alpha - 2026-09-23
+
+### Added
+
+- **`runDir`, the location type for a path inside the run directory.** Every
+  `userDataPaths` entry can now be written the same way — a location type and a
+  path beneath it — whichever side of the tree it is on, where before a path in
+  the tree had to be a bare string and only the places outside it could say
+  where they were. `runDir` is the program's own folder, so it names no
+  operating system: unlike the per-user types it is the same place on all of
+  them, and it is the only one the engine acts on rather than merely carries. An
+  entry that declares it is protected exactly as the string form is — spared by
+  `deletePath`, set aside for the duration of an install — because `Outside()`
+  answers on the location type rather than on its absence, so both spellings
+  take one path through the engine. A `runDir` path is interpolated like any
+  step path, keeping `${args.x}` and the rest, while a path outside the tree
+  stays literal: there the engine resolves the location and runs nothing, so
+  there is nothing to interpolate against. `Location()` returns the new
+  `ErrInsideRunDir` for one, since the path is relative to the run directory the
+  caller already holds and there is no per-user folder to find.
+
+### Deprecated
+
+- **A bare string in `userDataPaths`** is now the deprecated spelling of a
+  `runDir` entry. It still reads and means exactly the same thing, the two may
+  be mixed in one list while a spec is converted, and each round-trips in the
+  form it was written rather than being rewritten as the other — a `runDir`
+  object no longer marshals back out as a string. Nothing has to change; new
+  specs should prefer the object form.
+
 ## v0.0.9-alpha - 2026-09-22
 
 ### Added

@@ -11,28 +11,48 @@ import (
 	"strings"
 )
 
-// UserDataPath is one entry of a file's userDataPaths. Written as a string it
-// is a path inside the run's root, the form the engine protects: spared by
-// deletePath, set aside during an install. Written as an object it names a
-// place outside the tree — one of the per-user folders an operating system
-// gives a program for its own files, by a name that says which — and a path
-// beneath it:
+// LocationRunDir is the location type for a path inside the run directory —
+// the program's own folder, the place a build writes to. It is the one location
+// type that is not a per-user folder and not tied to an operating system, and
+// the only one the engine protects rather than merely carries.
+const LocationRunDir = "runDir"
+
+// UserDataPath is one entry of a file's userDataPaths. Every entry is an object
+// naming where the data lives and a path beneath it:
 //
-//	"userDataPaths": ["install/saves", { "locationType": "linuxData", "path": "melee-pc" }]
+//	"userDataPaths": [
+//	  { "locationType": "runDir",    "path": "install/saves" },
+//	  { "locationType": "linuxData", "path": "melee-pc" }
+//	]
 //
-// The engine parses the object form and keeps it in Spec.UserData, resolves
-// the location on request, and does nothing else with it: what happens at
-// that place is the host's. An entry is for one platform, the one its
-// location type names; a program that writes to a different folder on each
-// platform declares one entry per platform. The path is literal — no ${name}
-// interpolation.
+// runDir is inside the tree, and those entries are the ones the engine protects:
+// spared by deletePath, set aside for the duration of an install. Every other
+// location type names one of the per-user folders an operating system gives a
+// program for its own files, by a name that says which. Those the engine parses,
+// keeps in Spec.UserData and resolves on request, and does nothing else with:
+// what happens at that place is the host's. Such an entry is for one platform,
+// the one its type names, so a program writing to a different folder on each
+// declares one entry per platform.
+//
+// A bare string is the deprecated spelling of a runDir entry and still reads:
+//
+//	"userDataPaths": ["install/saves"]
+//
+// A runDir path is interpolated the way a step's path is, so it may hold
+// ${args.x} and the other run variables. A path outside the tree is literal,
+// because the engine resolves the location and never runs anything there.
 type UserDataPath struct {
 	LocationType string `json:"locationType,omitempty"`
 	Path         string `json:"path"`
 }
 
-// Outside reports whether the entry names a place outside the tree.
-func (u UserDataPath) Outside() bool { return u.LocationType != "" }
+// Outside reports whether the entry names a place outside the tree. A runDir
+// entry does not, and neither does a bare string, so both take the same path
+// through the engine and get the same protection — which is the point of the
+// two spellings being the same thing.
+func (u UserDataPath) Outside() bool {
+	return u.LocationType != "" && u.LocationType != LocationRunDir
+}
 
 func (u *UserDataPath) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 && data[0] == '"' {
@@ -49,15 +69,19 @@ func (u *UserDataPath) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("userDataPaths: an entry is a string or an object with locationType and path: %w", err)
 	}
 	if p.LocationType == "" {
-		return fmt.Errorf("userDataPaths: an object entry needs a locationType; a path inside the tree is written as a plain string")
+		return fmt.Errorf("userDataPaths: an object entry needs a locationType; a path inside the run directory is %q", LocationRunDir)
 	}
-	if _, known := locationTypes[p.LocationType]; !known {
-		return fmt.Errorf("userDataPaths: %q is not a location type; they are %s", p.LocationType, strings.Join(LocationTypes(), ", "))
+	if _, known := locationTypes[p.LocationType]; !known && p.LocationType != LocationRunDir {
+		return fmt.Errorf("userDataPaths: %q is not a location type; they are %s and %s",
+			p.LocationType, LocationRunDir, strings.Join(LocationTypes(), ", "))
 	}
 	if p.Path == "" {
 		return fmt.Errorf("userDataPaths: the %s entry has no path", p.LocationType)
 	}
-	if strings.Contains(p.Path, "${") {
+	// Only outside the tree: there the engine resolves the location and runs
+	// nothing, so there is nothing to interpolate against. A runDir path is a
+	// step path like any other and keeps the variables one can use.
+	if p.LocationType != LocationRunDir && strings.Contains(p.Path, "${") {
 		return fmt.Errorf("userDataPaths: a %s entry is literal and is not interpolated: %s", p.LocationType, p.Path)
 	}
 	// Beneath the location, never the location itself or anything above it:
@@ -71,7 +95,10 @@ func (u *UserDataPath) UnmarshalJSON(data []byte) error {
 }
 
 func (u UserDataPath) MarshalJSON() ([]byte, error) {
-	if !u.Outside() {
+	// Keyed on the type being absent rather than on Outside(), so a runDir entry
+	// written as an object comes back as one instead of being rewritten into the
+	// deprecated string form.
+	if u.LocationType == "" {
 		return json.Marshal(u.Path)
 	}
 	type plain UserDataPath
@@ -83,11 +110,20 @@ func (u UserDataPath) MarshalJSON() ([]byte, error) {
 // entry is simply not for this machine.
 var ErrOtherPlatform = errors.New("the location type is for another platform")
 
+// ErrInsideRunDir is returned by Location for an entry that is inside the run
+// directory — a runDir entry, or the bare string that means the same. There is
+// no per-user folder to resolve: the path is relative to the run directory the
+// caller already has.
+var ErrInsideRunDir = errors.New("the entry is inside the run directory")
+
 // Location resolves the entry's location type on this machine and returns
 // the place the entry names beneath it: the folder the type stands for, with
 // the path joined on in the platform's form. The path was checked at parse
 // time to stay beneath the folder, so the result is always inside it.
 func (u UserDataPath) Location() (string, error) {
+	if !u.Outside() {
+		return "", ErrInsideRunDir
+	}
 	goos, known := locationTypes[u.LocationType]
 	if !known {
 		return "", fmt.Errorf("userDataPaths: %q is not a location type", u.LocationType)

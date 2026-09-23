@@ -145,7 +145,7 @@ File-level only:
 | --- | --- | --- |
 | `defaultVersion` | string | The version a host should offer first. Must be one a build declares. |
 | `uninstallSteps` | object[] | Optional teardown sequence, shared by every build. |
-| `userDataPaths` | (string \| object)[] | The program's user's data: paths in the tree a `deletePath` must leave behind, or places outside it for the host — see [User data](#user-data). |
+| `userDataPaths` | object[] | The program's user's data: `runDir` paths in the tree a `deletePath` must leave behind, or places outside it for the host. A bare string is the deprecated spelling of a `runDir` entry — see [User data](#user-data). |
 | `builds` | object[] | The builds themselves. Required in the object form. |
 
 ### Versions
@@ -354,11 +354,15 @@ Multiple `defineExecutable` steps are allowed; hosts typically treat the first a
 A teardown sequence is usually one `deletePath install`, which is fine until the
 program has written save games or a configuration file inside the tree it is about
 to remove. `userDataPaths` names the paths that hold data the user owns, and every
-delete leaves them alone:
+delete leaves them alone. Each entry says where the data lives — `runDir` for the run
+directory, the program's own folder — and a path beneath it:
 
 ```json
 {
-  "userDataPaths": ["install/saves", "install/game.config"],
+  "userDataPaths": [
+    { "locationType": "runDir", "path": "install/saves" },
+    { "locationType": "runDir", "path": "install/game.config" }
+  ],
   "uninstallSteps": [
     { "step": "deletePath", "path": "install" }
   ],
@@ -376,7 +380,10 @@ correct for all of them. A program that moved its save directory between release
 both places:
 
 ```json
-"userDataPaths": ["install/saves", "install/data/saves"]
+"userDataPaths": [
+  { "locationType": "runDir", "path": "install/saves" },
+  { "locationType": "runDir", "path": "install/data/saves" }
+]
 ```
 
 The old location is simply skipped for builds that never had it, and a player upgrading
@@ -404,33 +411,36 @@ Points worth knowing:
   in a user data path just as it does in a step.
 
 A program that writes the user's data *outside* the tree — its own folder under
-`~/.local/share` or `%APPDATA%`, say — names that place as an object in the same list:
-a **location type**, which says which of the per-user folders an operating system gives
-programs, and a path beneath it.
+`~/.local/share` or `%APPDATA%`, say — gives that entry a different location type: one
+of the per-user folders an operating system hands programs, again with a path beneath
+it. Both kinds sit in the one list, because an author declares the user's data in one
+place whichever side of the tree it is on.
 
 ```json
 "userDataPaths": [
-  "install/saves",
+  { "locationType": "runDir", "path": "install/saves" },
   { "locationType": "linuxData", "path": "melee-pc" },
   { "locationType": "windowsRoaming", "path": "melee-pc" }
 ]
 ```
 
-The engine parses the object form and carries it in `Spec.UserData`; it acts on none
-of it during a run, because nothing outside the tree is a build's business, and
-`Spec.UserDataPaths` holds only the string entries. What to do at the place — link it
-into a profile, back it up — is the host's; `UserDataPath.Location()` resolves it for
-the host on the machine it runs on, and returns `ErrOtherPlatform` for an entry whose
-type belongs to another operating system, which is how a host skips the entries that
-are not for it.
+`runDir` is the only location type the engine acts on. The rest it parses and carries
+in `Spec.UserData`, acting on none of them during a run, because nothing outside the
+tree is a build's business; `Spec.UserDataPaths` holds the `runDir` paths alone. What
+to do at the place — link it into a profile, back it up — is the host's;
+`UserDataPath.Location()` resolves it for the host on the machine it runs on, and
+returns `ErrOtherPlatform` for an entry whose type belongs to another operating system,
+which is how a host skips the entries that are not for it.
 
-The location types name the folder the way its platform's programs do, so an author
+The per-user types name the folder the way its platform's programs do, so an author
 writes what a port's own documentation says rather than translating it. Each is for
 one platform; a program that writes to a different folder on each platform declares
-one entry per platform, as above.
+one entry per platform, as above. `runDir` names no platform, because the program's own
+folder is in the same place on all of them.
 
 | locationType | Resolves to |
 |---|---|
+| `runDir` | the run directory itself — every platform, and the only one the engine protects |
 | `linuxConfig` | `$XDG_CONFIG_HOME`, else `~/.config` |
 | `linuxData` | `$XDG_DATA_HOME`, else `~/.local/share` |
 | `windowsRoaming` | `%APPDATA%` (`…\AppData\Roaming`) |
@@ -438,6 +448,21 @@ one entry per platform, as above.
 | `windowsDocuments` | the Documents known folder, wherever it is redirected to |
 | `windowsSavedGames` | the Saved Games known folder |
 | `macosApplicationSupport` | `~/Library/Application Support` |
+
+`Location()` returns `ErrInsideRunDir` for a `runDir` entry: there is no per-user folder
+to resolve, and the path is relative to the run directory the caller already has.
+
+**A bare string is the deprecated spelling of a `runDir` entry.** It still reads, and
+means exactly the same thing:
+
+```json
+"userDataPaths": ["install/saves"]
+```
+
+Both spellings take the same path through the engine and get the same protection, and
+each round-trips as it was written rather than being converted into the other. New specs
+should use the object form; the string form is kept so existing ones keep working, and
+the two may be mixed in one list while a spec is converted.
 
 Where a program writes on Linux depends on its toolkit: SDL's `SDL_GetPrefPath` gives
 `~/.local/share/<name>`, so a port built on SDL is `linuxData`; one that writes to
@@ -630,7 +655,7 @@ The words this README leans on, in the sense it uses them.
 
 **Platform** — a name from `targetPlatforms`, matched against what the host is building for. Architecture is part of the name where it matters (`Linux-x64`, `Mac-arm64`).
 
-**User data paths** — `userDataPaths`: paths that belong to the program's user rather than to the build — saves, configuration. Inside the run directory, `deletePath` spares them and an install moves them out of the tree and back so a build cannot write over them. Outside it, an entry names a location type — a platform's per-user folder — and a path beneath it, and the host does what it does there; the engine resolves it and otherwise only carries it.
+**User data paths** — `userDataPaths`: paths that belong to the program's user rather than to the build — saves, configuration. Every entry names a **location type** and a path beneath it. `runDir` is inside the run directory: `deletePath` spares those paths and an install moves them out of the tree and back so a build cannot write over them. Every other type is one of a platform's per-user folders, and the host does what it does there; the engine resolves it and otherwise only carries it. A bare string is the deprecated spelling of a `runDir` entry.
 
 **Teardown** — a run of `uninstallSteps`. Spared the user-data set-aside, since an uninstall that put the saves back would leave an install directory holding nothing but them.
 

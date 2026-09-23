@@ -620,3 +620,131 @@ func TestUserDataPathLocationFollowsThePlatform(t *testing.T) {
 		t.Errorf("LocationTypes = %q", got)
 	}
 }
+
+// runDir is the object spelling of an in-tree path. It has to behave exactly as
+// the bare string does — same list, same protection — because that is the whole
+// claim being made by having two spellings.
+func TestUserDataPathsTakeARunDirEntry(t *testing.T) {
+	sf, err := ParseSpecFile([]byte(`{
+	  "userDataPaths": [
+	    { "locationType": "runDir", "path": "install/saves" },
+	    "install/game.config",
+	    { "locationType": "linuxData", "path": "melee-pc" }
+	  ],
+	  "builds": [{ "versions": ["1.0"], "steps": [] }]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := sf.Specs[0]
+
+	// The runDir entry sits in the in-tree list beside the string, in order.
+	if got := strings.Join(spec.UserDataPaths, ","); got != "install/saves,install/game.config" {
+		t.Errorf("in-tree paths = %q", got)
+	}
+	if spec.UserData[0].Outside() {
+		t.Errorf("a runDir entry is not outside the tree: %+v", spec.UserData[0])
+	}
+	if !spec.UserData[2].Outside() {
+		t.Errorf("a per-user folder entry is: %+v", spec.UserData[2])
+	}
+	if got := strings.Join(spec.BuildOptions("Linux", "1.0", nil, nil).PreservePaths, ","); got != "install/saves,install/game.config" {
+		t.Errorf("PreservePaths = %q", got)
+	}
+
+	// Each entry round-trips in the spelling its author used, so reading a file
+	// and writing it back does not quietly convert either one into the other.
+	out, err := json.Marshal(spec.UserData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"locationType":"runDir","path":"install/saves"},"install/game.config",{"locationType":"linuxData","path":"melee-pc"}]`
+	if string(out) != want {
+		t.Errorf("marshal = %s", out)
+	}
+}
+
+// The protection is the point, so assert it against a build that overwrites the
+// path rather than only against the list it lands in.
+func TestRunProtectsARunDirEntry(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "install", "saves", "slot1.sav"), "save data")
+
+	spec := specFromJSON(t, `{
+	  "userDataPaths": [{ "locationType": "runDir", "path": "install/saves" }],
+	  "builds": [{"versions": ["1.0"], "steps": []}]
+	}`)
+	opts := spec.BuildOptions("Linux", "1.0", nil, []string{"1.0"})
+	opts.RootDir = root
+	opts.Steps = []Step{
+		{Step: "deletePath", Path: "install/saves"},
+		{Step: "touch", Path: "install/saves"},
+	}
+
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, "install", "saves", "slot1.sav")); got != "save data" {
+		t.Errorf("the player's save should have survived, got %q", got)
+	}
+}
+
+// An in-tree path is a step path, so it keeps the variables the string form has.
+// A path outside the tree does not, since the engine resolves the location and
+// runs nothing there.
+func TestRunDirPathInterpolatesButAnOutsideOneDoesNot(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "install", "us", "slot1.sav"), "save data")
+	write(t, filepath.Join(root, "install", "game"), "binary")
+
+	spec := specFromJSON(t, `{
+	  "userDataPaths": [{ "locationType": "runDir", "path": "install/${args.region}" }],
+	  "builds": [{"versions": ["1.0"], "steps": []}]
+	}`)
+	opts := spec.BuildOptions("Linux", "1.0", map[string]string{"region": "us"}, []string{"1.0"})
+	opts.RootDir = root
+	opts.Teardown = true
+	opts.Steps = []Step{{Step: "deletePath", Path: "install"}}
+
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !exists(t, filepath.Join(root, "install", "us", "slot1.sav")) {
+		t.Error("an interpolated runDir path should have been honoured")
+	}
+
+	if _, err := ParseSpecFile([]byte(`{
+	  "userDataPaths": [{ "locationType": "linuxData", "path": "${args.region}" }],
+	  "builds": [{ "versions": ["1.0"], "steps": [] }]
+	}`)); err == nil {
+		t.Error("a path outside the tree is literal and should be rejected")
+	}
+}
+
+func TestUserDataPathsRejectMalformedRunDirEntries(t *testing.T) {
+	for name, entry := range map[string]string{
+		"no path":     `{ "locationType": "runDir" }`,
+		"absolute":    `{ "locationType": "runDir", "path": "/etc" }`,
+		"escapes":     `{ "locationType": "runDir", "path": "../elsewhere" }`,
+		"the run dir": `{ "locationType": "runDir", "path": "." }`,
+		"misspelled":  `{ "locationType": "rundir", "path": "install/saves" }`,
+	} {
+		_, err := ParseSpecFile([]byte(`{ "userDataPaths": [` + entry + `], "builds": [{ "versions": ["1.0"], "steps": [] }] }`))
+		if err == nil {
+			t.Errorf("%s: %s should be rejected", name, entry)
+		}
+	}
+}
+
+// Location has nothing to resolve for an in-tree entry, in either spelling: the
+// path is relative to the run directory the caller already holds.
+func TestLocationOnAnInTreeEntry(t *testing.T) {
+	for _, u := range []UserDataPath{
+		{LocationType: LocationRunDir, Path: "install/saves"},
+		{Path: "install/saves"},
+	} {
+		if _, err := u.Location(); !errors.Is(err, ErrInsideRunDir) {
+			t.Errorf("%+v: Location error = %v, want ErrInsideRunDir", u, err)
+		}
+	}
+}
